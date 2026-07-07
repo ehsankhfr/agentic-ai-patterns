@@ -106,29 +106,46 @@ def run_article_chain(topic: str) -> str:
 
 def step_translate(text: str, target_language: str) -> str:
     """Step 1: Translate text into the target language."""
-    prompt = f"Translate the following text to {target_language}. Return only the translation:\n\n{text}"
-    return llm_call(prompt)
+    system = (
+        f"You are a professional translator specialising in {target_language}. "
+        "Translate the user's text exactly, preserving meaning and tone. "
+        "Output ONLY the translated text — no explanations, no quotes, no alternatives."
+    )
+    prompt = (
+        f"Translate the following English text into {target_language}.\n"
+        f"Example: 'The weather is nice today.' → 'Il fait beau aujourd'hui.' (for French)\n\n"
+        f"Now translate this:\n{text}"
+    )
+    return llm_call(prompt, system)
 
 
 def gate_verify_translation(original: str, translation: str, target_language: str) -> bool:
     """Gate: Verify that the translation is accurate. Returns True if acceptable."""
-    system = "You are a translation quality reviewer. Respond with only 'PASS' or 'FAIL'."
-    prompt = (
-        f"Original text:\n{original}\n\n"
-        f"Translation ({target_language}):\n{translation}\n\n"
-        "Is this translation accurate and natural? Respond with only PASS or FAIL."
+    system = (
+        "You are a strict translation quality reviewer. "
+        "Your only job is to respond with the single word PASS or FAIL. "
+        "Do not write anything else."
     )
-    result = llm_call(prompt, system)
-    return "PASS" in result.upper()
+    prompt = (
+        f"Does this {target_language} translation accurately convey the meaning of the original?"
+        f"\n\nOriginal (English):\n{original}"
+        f"\n\n{target_language} translation:\n{translation}"
+        "\n\nRespond with PASS if the translation is accurate, or FAIL if it is wrong or unnatural."
+        "\nYour response must be exactly one word: PASS or FAIL."
+    )
+    result = llm_call(prompt, system).strip().upper()
+    return result.startswith("PASS")
 
 
 def step_polish_translation(translation: str, target_language: str) -> str:
     """Step 2: Polish the translation for natural flow."""
-    prompt = (
-        f"Polish this {target_language} translation to sound natural to a native speaker. "
-        f"Return only the polished version:\n\n{translation}"
+    system = (
+        f"You are a native {target_language} editor. "
+        "Refine the given translation so it sounds fluent and natural. "
+        "Output only the polished text with no explanation."
     )
-    return llm_call(prompt)
+    prompt = f"Polish this {target_language} translation:\n\n{translation}"
+    return llm_call(prompt, system)
 
 
 def run_translation_chain(text: str, target_language: str, max_retries: int = 2) -> str:
@@ -167,5 +184,6 @@ if __name__ == "__main__":
 
     # Demo 2: Translation chain with gate
     print("\n--- Demo 2: Translation Chain with Quality Gate ---\n")
-    english_text = "The early bird catches the worm, but the second mouse gets the cheese."
+    # Note: for best multilingual results use a larger model, e.g. ollama pull mistral
+    english_text = "Artificial intelligence is transforming the way software is built and maintained."
     run_translation_chain(english_text, "French")
