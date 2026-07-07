@@ -50,6 +50,7 @@ ollama pull llama3.2          # default (3b)
 ollama pull llama3.2:1b       # smaller/faster variant
 ollama pull llama3.2:3b       # explicit 3b variant
 ollama pull llama3.1:8b       # larger, more capable
+ollama pull mistral           # recommended for multilingual / translation tasks
 ```
 
 To use a different model, update the `model` parameter in the `llm_call` function of any pattern, or pass it at the call site.
