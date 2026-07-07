@@ -31,15 +31,28 @@ All patterns are configured to use a local **llama3.2** model via Ollama. No API
 ```bash
 brew install ollama
 ollama pull llama3.2
-ollama serve        # start the local server
 ```
 
-To stop Ollama:
+**Start Ollama as a background service** (auto-restarts at login):
 
 ```bash
-ollama stop         # stop a running model
-# or quit the Ollama app from the macOS menu bar
+brew services start ollama    # start in background
+brew services stop ollama     # stop
+brew services restart ollama  # restart
+brew services info ollama     # check status
 ```
+
+**List installed models and pull a specific version:**
+
+```bash
+ollama list                   # show locally installed models
+ollama pull llama3.2          # default (3b)
+ollama pull llama3.2:1b       # smaller/faster variant
+ollama pull llama3.2:3b       # explicit 3b variant
+ollama pull llama3.1:8b       # larger, more capable
+```
+
+To use a different model, update the `model` parameter in the `llm_call` function of any pattern, or pass it at the call site.
 
 ### 2. Install dependencies
 
@@ -62,4 +75,4 @@ python routing/main.py
 ## Requirements
 
 - Python 3.10+
-- [Ollama](https://ollama.com) with `llama3.2` pulled and `ollama serve` running
+- [Ollama](https://ollama.com) running as a background service (`brew services start ollama`) with `llama3.2` pulled
