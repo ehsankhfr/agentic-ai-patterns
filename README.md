@@ -27,6 +27,13 @@ Classifies an input and directs it to a specialised handler. Keeps prompts focus
 - **LLM-based router** — the model classifies intent in natural language
 - **Structured router** — the model returns JSON for unambiguous classification
 
+### [Reflection](reflection/main.py)
+
+Lets an LLM critique and iteratively improve its own output. Instead of accepting the first response, a critic evaluates the draft and the generator revises until quality criteria are met. Demonstrates two strategies:
+
+- **Self-reflection** — a single model generates a draft, critiques it, then rewrites based on its own feedback
+- **Two-agent loop** — a dedicated critic and generator take turns until the critic approves or a max-iteration limit is reached
+
 ## Setup
 
 All patterns are configured to use a local **llama3.2** model via Ollama. No API key required.
@@ -68,6 +75,7 @@ Each pattern has its own `requirements.txt`:
 pip install -r prompt-chaining/requirements.txt
 pip install -r parallelisation/requirements.txt
 pip install -r routing/requirements.txt
+pip install -r reflection/requirements.txt
 ```
 
 ### 3. Run a pattern
@@ -76,6 +84,7 @@ pip install -r routing/requirements.txt
 python prompt-chaining/main.py
 python parallelisation/main.py
 python routing/main.py
+python reflection/main.py
 ```
 
 ## Requirements
