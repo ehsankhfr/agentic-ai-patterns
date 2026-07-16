@@ -9,25 +9,25 @@ A collection of practical agentic AI design patterns implemented with the OpenAI
 
 ## Patterns
 
-### [Prompt Chaining](prompt-chaining/main.py)
+### [Prompt Chaining](01-workflow-patterns/01-prompt-chaining/main.py)
 
 Decomposes a task into a sequence of steps where each LLM call processes the output of the previous one. Useful for structured pipelines like Research → Draft → Edit.
 
-### [Parallelisation](parallelisation/main.py)
+### [Parallelisation](01-workflow-patterns/03-parallelisation/main.py)
 
 Runs multiple LLM calls concurrently to reduce latency when sub-tasks are independent. Demonstrates two strategies:
 
 - **Sectioning** — split a large task into independent chunks processed in parallel
 - **Voting** — run the same prompt N times and aggregate results for higher reliability
 
-### [Routing](routing/main.py)
+### [Routing](01-workflow-patterns/02-routing/main.py)
 
 Classifies an input and directs it to a specialised handler. Keeps prompts focused by using a lightweight router. Demonstrates two strategies:
 
 - **LLM-based router** — the model classifies intent in natural language
 - **Structured router** — the model returns JSON for unambiguous classification
 
-### [Reflection](reflection/main.py)
+### [Reflection](01-workflow-patterns/04-reflection/main.py)
 
 Lets an LLM critique and iteratively improve its own output. Instead of accepting the first response, a critic evaluates the draft and the generator revises until quality criteria are met. Demonstrates two strategies:
 
@@ -72,19 +72,19 @@ To use a different model, update the `model` parameter in the `llm_call` functio
 Each pattern has its own `requirements.txt`:
 
 ```bash
-pip install -r prompt-chaining/requirements.txt
-pip install -r parallelisation/requirements.txt
-pip install -r routing/requirements.txt
-pip install -r reflection/requirements.txt
+pip install -r 01-workflow-patterns/01-prompt-chaining/requirements.txt
+pip install -r 01-workflow-patterns/02-routing/requirements.txt
+pip install -r 01-workflow-patterns/03-parallelisation/requirements.txt
+pip install -r 01-workflow-patterns/04-reflection/requirements.txt
 ```
 
 ### 3. Run a pattern
 
 ```bash
-python prompt-chaining/main.py
-python parallelisation/main.py
-python routing/main.py
-python reflection/main.py
+python 01-workflow-patterns/01-prompt-chaining/main.py
+python 01-workflow-patterns/02-routing/main.py
+python 01-workflow-patterns/03-parallelisation/main.py
+python 01-workflow-patterns/04-reflection/main.py
 ```
 
 ## Requirements
