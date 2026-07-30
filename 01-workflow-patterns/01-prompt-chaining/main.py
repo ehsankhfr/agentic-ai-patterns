@@ -12,10 +12,8 @@ Each step in the chain can apply its own focused prompt, and you can add
 gate/validation logic between steps.
 """
 
-import os
-import sys
 from dotenv import find_dotenv, load_dotenv
-from openai import OpenAI, AuthenticationError, RateLimitError
+from openai import OpenAI
 
 load_dotenv(find_dotenv())
 
@@ -32,20 +30,10 @@ def llm_call(prompt: str, system: str = "", model: str = "llama3.2") -> str:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
 
-    try:
-        response = client.chat.completions.create(
-            model=model,
-            messages=messages,
-        )
-    except RateLimitError as e:
-        if "insufficient_quota" in str(e):
-            sys.exit(
-                "Error: OpenAI quota exceeded. Add billing credits at "
-                "https://platform.openai.com/settings/billing"
-            )
-        raise
-    except AuthenticationError:
-        sys.exit("Error: Invalid OPENAI_API_KEY. Check your .env file.")
+    response = client.chat.completions.create(
+        model=model,
+        messages=messages,
+    )
     return response.choices[0].message.content.strip()
 
 
