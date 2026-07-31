@@ -163,6 +163,17 @@ async def voting_demo() -> None:
     start = time.perf_counter()
     result = await voting_evaluate(essay, criteria, n=3)
     elapsed = time.perf_counter() - start
+
+    avg_score = result["average_score"]
+
+    if avg_score >= 8:
+        verdict = "Strong submission"
+    elif avg_score >= 6:
+        verdict = "Acceptable but needs improvement"
+    else:
+        verdict = "Needs major revision"
+
+    print(f"\nFinal verdict: {verdict}")
     print(f"\nAggregated in {elapsed:.2f}s (parallel)\n")
 
 
