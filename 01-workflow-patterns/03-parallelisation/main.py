@@ -12,6 +12,13 @@ Two parallelisation strategies are demonstrated:
   2. Voting       – Run the same prompt multiple times in parallel and
                     aggregate the results for higher reliability / consensus
                     (e.g., N independent evaluations of a piece of text).
+
+  3. Map-Reduce   – Apply the same transformation to many independent inputs
+                    in parallel (Map), then send all intermediate results to a
+                    final LLM call that combines them into a single answer
+                    (Reduce).
+                    Example: extract key facts from many documents at once,
+                    then synthesise those facts into one research summary.
 """
 
 import asyncio
