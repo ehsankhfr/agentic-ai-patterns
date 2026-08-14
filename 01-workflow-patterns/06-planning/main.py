@@ -61,7 +61,20 @@ def extract_json(text: str) -> list[dict]:
     end = raw.rfind("]") + 1
     if start == -1 or end == 0:
         raise ValueError(f"No JSON array found in response:\n{text}")
-    return json.loads(raw[start:end])
+    candidate = raw[start:end]
+
+    try:
+        return json.loads(candidate)
+    except json.JSONDecodeError:
+        # Local models often emit trailing commas before a closing ] or };
+        # strip those and retry before giving up.
+        repaired = re.sub(r",\s*([\]}])", r"\1", candidate)
+        try:
+            return json.loads(repaired)
+        except json.JSONDecodeError as exc:
+            raise ValueError(
+                f"Could not parse JSON array from response:\n{text}"
+            ) from exc
 
 
 @dataclass
