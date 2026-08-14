@@ -34,6 +34,19 @@ Lets an LLM critique and iteratively improve its own output. Instead of acceptin
 - **Self-reflection** — a single model generates a draft, critiques it, then rewrites based on its own feedback
 - **Two-agent loop** — a dedicated critic and generator take turns until the critic approves or a max-iteration limit is reached
 
+### [Multi-Agent Collaboration](01-workflow-patterns/07-multi-agent-collaboration/main.py)
+
+Shows the main collaboration topologies for specialised agents:
+
+- **Sequential pipeline** — each agent receives the previous agent's handoff and extends it
+- **Supervisor-worker** — a supervisor delegates focused assignments and reconciles the results
+- **Parallel council** — independent agents propose solutions, then a chair selects or combines them
+- **Peer debate** — opposing agents challenge proposals before a moderator decides
+- **Hierarchical team** — specialists report to domain leads, who report to a coordinator
+- **Blackboard** — agents contribute to a shared workspace that a reviewer and synthesizer inspect
+
+The runnable demo uses the blackboard topology. The other variants are available as functions in the same file so they can be selected without changing the shared LLM client.
+
 ## Setup
 
 All patterns are configured to use a local **llama3.2** model via Ollama. No API key required.
@@ -76,6 +89,7 @@ pip install -r 01-workflow-patterns/01-prompt-chaining/requirements.txt
 pip install -r 01-workflow-patterns/02-routing/requirements.txt
 pip install -r 01-workflow-patterns/03-parallelisation/requirements.txt
 pip install -r 01-workflow-patterns/04-reflection/requirements.txt
+pip install -r 01-workflow-patterns/07-multi-agent-collaboration/requirements.txt
 ```
 
 ### 3. Run a pattern
@@ -85,6 +99,7 @@ python 01-workflow-patterns/01-prompt-chaining/main.py
 python 01-workflow-patterns/02-routing/main.py
 python 01-workflow-patterns/03-parallelisation/main.py
 python 01-workflow-patterns/04-reflection/main.py
+python 01-workflow-patterns/07-multi-agent-collaboration/main.py
 ```
 
 ## Requirements
