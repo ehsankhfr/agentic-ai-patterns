@@ -9,51 +9,58 @@ A collection of practical agentic AI design patterns implemented with the OpenAI
 
 ## Patterns
 
-### [Prompt Chaining](01-workflow-patterns/01-prompt-chaining/main.py)
+The patterns are grouped by the role they play in an agentic system.
+
+### 1. Workflow Control
+
+These patterns control how work flows between steps and agents.
+
+#### [Prompt Chaining](01-workflow-control/01-prompt-chaining/main.py)
 
 Decomposes a task into a sequence of steps where each LLM call processes the output of the previous one. Useful for structured pipelines like Research → Draft → Edit.
 
-### [Parallelisation](01-workflow-patterns/03-parallelisation/main.py)
-
-Runs multiple LLM calls concurrently to reduce latency when sub-tasks are independent. Demonstrates two strategies:
-
-- **Sectioning** — split a large task into independent chunks processed in parallel
-- **Voting** — run the same prompt N times and aggregate results for higher reliability
-
-### [Routing](01-workflow-patterns/02-routing/main.py)
+#### [Routing](01-workflow-control/02-routing/main.py)
 
 Classifies an input and directs it to a specialised handler. Keeps prompts focused by using a lightweight router. Demonstrates two strategies:
 
 - **LLM-based router** — the model classifies intent in natural language
 - **Structured router** — the model returns JSON for unambiguous classification
 
-### [Reflection](01-workflow-patterns/04-reflection/main.py)
+#### [Parallelisation](01-workflow-control/03-parallelisation/main.py)
 
-Lets an LLM critique and iteratively improve its own output. Instead of accepting the first response, a critic evaluates the draft and the generator revises until quality criteria are met. Demonstrates two strategies:
+Runs multiple LLM calls concurrently to reduce latency when sub-tasks are independent. Demonstrates sectioning, voting, and map-reduce strategies.
 
-- **Self-reflection** — a single model generates a draft, critiques it, then rewrites based on its own feedback
-- **Two-agent loop** — a dedicated critic and generator take turns until the critic approves or a max-iteration limit is reached
+#### [Planning](01-workflow-control/04-planning/main.py)
 
-### [Multi-Agent Collaboration](01-workflow-patterns/07-multi-agent-collaboration/main.py)
+Separates what to do from how to do it: a planner creates a structured sequence of steps and an executor carries them out. Dynamic replanning handles unexpected results.
 
-Shows the main collaboration topologies for specialised agents:
+### 2. Quality and Reliability
 
-- **Sequential pipeline** — each agent receives the previous agent's handoff and extends it
-- **Supervisor-worker** — a supervisor delegates focused assignments and reconciles the results
-- **Parallel council** — independent agents propose solutions, then a chair selects or combines them
-- **Peer debate** — opposing agents challenge proposals before a moderator decides
-- **Hierarchical team** — specialists report to domain leads, who report to a coordinator
-- **Blackboard** — agents contribute to a shared workspace that a reviewer and synthesizer inspect
+These patterns improve outputs through critique, revision, consensus, and recovery.
 
-The runnable demo uses the blackboard topology. The other variants are available as functions in the same file so they can be selected without changing the shared LLM client.
+#### [Reflection](02-quality-reliability/01-reflection/main.py)
 
-### [Memory Management](01-workflow-patterns/08-memory-management/main.py)
+Lets an LLM critique and iteratively improve its own output through self-reflection or a dedicated critic-generator loop.
 
-Lets an agent retain information both within and across conversations, instead of treating every message as stateless. Demonstrates three strategies:
+Parallelisation's voting strategy and Planning's dynamic replanning also provide reliability mechanisms.
 
-- **Short-term memory** — a `Session` keeps a scoped `state` dict (`user:`/`app:`/`temp:` prefixes) and a sliding window of turns; once the window overflows, older turns are summarised so context stays bounded without losing information
-- **Long-term memory** — an `InMemoryMemoryStore` persists facts distilled from a session and retrieves them by similarity when a new session starts, folding relevant memories back into the short-term context
-- **Learning from experience** — typed episodic and procedural memories capture task outcomes and user feedback; duplicate memories are consolidated, confidence affects retrieval, and relevant lessons are applied to a later task
+### 3. Tools and Memory
+
+These patterns connect agents to external capabilities and persistent context.
+
+#### [Tool Use](03-tools-and-memory/01-tool-use/main.py)
+
+Lets the LLM invoke external functions such as APIs, calculators, and databases, either in a single turn or through an agentic multi-step tool loop.
+
+#### [Memory Management](03-tools-and-memory/02-memory-management/main.py)
+
+Provides short-term context management, long-term persistent memory, and learning from experience across sessions.
+
+### 4. Multi-Agent Organization
+
+#### [Multi-Agent Collaboration](04-multi-agent/01-multi-agent-collaboration/main.py)
+
+Shows sequential pipelines, supervisor-worker teams, parallel councils, peer debates, hierarchical teams, and blackboard collaboration.
 
 ## Setup
 
@@ -93,23 +100,27 @@ To use a different model, update the `model` parameter in the `llm_call` functio
 Each pattern has its own `requirements.txt`:
 
 ```bash
-pip install -r 01-workflow-patterns/01-prompt-chaining/requirements.txt
-pip install -r 01-workflow-patterns/02-routing/requirements.txt
-pip install -r 01-workflow-patterns/03-parallelisation/requirements.txt
-pip install -r 01-workflow-patterns/04-reflection/requirements.txt
-pip install -r 01-workflow-patterns/07-multi-agent-collaboration/requirements.txt
-pip install -r 01-workflow-patterns/08-memory-management/requirements.txt
+pip install -r 01-workflow-control/01-prompt-chaining/requirements.txt
+pip install -r 01-workflow-control/02-routing/requirements.txt
+pip install -r 01-workflow-control/03-parallelisation/requirements.txt
+pip install -r 01-workflow-control/04-planning/requirements.txt
+pip install -r 02-quality-reliability/01-reflection/requirements.txt
+pip install -r 03-tools-and-memory/01-tool-use/requirements.txt
+pip install -r 03-tools-and-memory/02-memory-management/requirements.txt
+pip install -r 04-multi-agent/01-multi-agent-collaboration/requirements.txt
 ```
 
 ### 3. Run a pattern
 
 ```bash
-python 01-workflow-patterns/01-prompt-chaining/main.py
-python 01-workflow-patterns/02-routing/main.py
-python 01-workflow-patterns/03-parallelisation/main.py
-python 01-workflow-patterns/04-reflection/main.py
-python 01-workflow-patterns/07-multi-agent-collaboration/main.py
-python 01-workflow-patterns/08-memory-management/main.py
+python 01-workflow-control/01-prompt-chaining/main.py
+python 01-workflow-control/02-routing/main.py
+python 01-workflow-control/03-parallelisation/main.py
+python 01-workflow-control/04-planning/main.py
+python 02-quality-reliability/01-reflection/main.py
+python 03-tools-and-memory/01-tool-use/main.py
+python 03-tools-and-memory/02-memory-management/main.py
+python 04-multi-agent/01-multi-agent-collaboration/main.py
 ```
 
 ## Requirements
