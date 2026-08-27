@@ -47,6 +47,14 @@ Shows the main collaboration topologies for specialised agents:
 
 The runnable demo uses the blackboard topology. The other variants are available as functions in the same file so they can be selected without changing the shared LLM client.
 
+### [Memory Management](01-workflow-patterns/08-memory-management/main.py)
+
+Lets an agent retain information both within and across conversations, instead of treating every message as stateless. Demonstrates three strategies:
+
+- **Short-term memory** — a `Session` keeps a scoped `state` dict (`user:`/`app:`/`temp:` prefixes) and a sliding window of turns; once the window overflows, older turns are summarised so context stays bounded without losing information
+- **Long-term memory** — an `InMemoryMemoryStore` persists facts distilled from a session and retrieves them by similarity when a new session starts, folding relevant memories back into the short-term context
+- **Learning from experience** — typed episodic and procedural memories capture task outcomes and user feedback; duplicate memories are consolidated, confidence affects retrieval, and relevant lessons are applied to a later task
+
 ## Setup
 
 All patterns are configured to use a local **llama3.2** model via Ollama. No API key required.
@@ -90,6 +98,7 @@ pip install -r 01-workflow-patterns/02-routing/requirements.txt
 pip install -r 01-workflow-patterns/03-parallelisation/requirements.txt
 pip install -r 01-workflow-patterns/04-reflection/requirements.txt
 pip install -r 01-workflow-patterns/07-multi-agent-collaboration/requirements.txt
+pip install -r 01-workflow-patterns/08-memory-management/requirements.txt
 ```
 
 ### 3. Run a pattern
@@ -100,6 +109,7 @@ python 01-workflow-patterns/02-routing/main.py
 python 01-workflow-patterns/03-parallelisation/main.py
 python 01-workflow-patterns/04-reflection/main.py
 python 01-workflow-patterns/07-multi-agent-collaboration/main.py
+python 01-workflow-patterns/08-memory-management/main.py
 ```
 
 ## Requirements
