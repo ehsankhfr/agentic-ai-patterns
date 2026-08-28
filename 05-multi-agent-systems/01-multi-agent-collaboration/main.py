@@ -26,13 +26,18 @@ Six collaboration topologies are demonstrated:
                              reviewer inspects before a synthesizer answers.
 """
 
+import asyncio
 from dataclasses import dataclass, field
 from dotenv import find_dotenv, load_dotenv
-from openai import OpenAI
+from openai import AsyncOpenAI, OpenAI
 
 load_dotenv(find_dotenv())
 
 client = OpenAI(
+    base_url="http://localhost:11434/v1",
+    api_key="ollama",
+)
+async_client = AsyncOpenAI(
     base_url="http://localhost:11434/v1",
     api_key="ollama",
 )
@@ -79,7 +84,28 @@ def llm_call(prompt: str, system: str = "", model: str = MODEL) -> str:
         messages.append({"role": "system", "content": system})
     messages.append({"role": "user", "content": prompt})
     response = client.chat.completions.create(model=model, messages=messages)
-    return response.choices[0].message.content.strip()
+    content = response.choices[0].message.content
+    if content is None:
+        raise RuntimeError("The model returned a response without text content.")
+    return content.strip()
+
+
+async def llm_call_async(
+    prompt: str, system: str = "", model: str = MODEL
+) -> str:
+    """Async LLM call returning the text response."""
+    messages = []
+    if system:
+        messages.append({"role": "system", "content": system})
+    messages.append({"role": "user", "content": prompt})
+    response = await async_client.chat.completions.create(
+        model=model,
+        messages=messages,
+    )
+    content = response.choices[0].message.content
+    if content is None:
+        raise RuntimeError("The model returned a response without text content.")
+    return content.strip()
 
 
 def ask_role(task: str, role: str, context: str = "") -> str:
@@ -93,6 +119,19 @@ def ask_role(task: str, role: str, context: str = "") -> str:
         prompt += f"Handoff from the team:\n{context}\n\n"
     prompt += f"Your assignment: {role}\n\nProvide your contribution."
     return llm_call(prompt, system)
+
+
+async def ask_role_async(task: str, role: str, context: str = "") -> str:
+    """Async counterpart to ask_role for independent collaboration tasks."""
+    system = (
+        f"You are a specialist agent responsible for {role}. Be concrete, "
+        "state uncertainty, and produce work another agent can use."
+    )
+    prompt = f"Task:\n{task}\n\n"
+    if context:
+        prompt += f"Handoff from the team:\n{context}\n\n"
+    prompt += f"Your assignment: {role}\n\nProvide your contribution."
+    return await llm_call_async(prompt, system)
 
 
 def synthesize(task: str, evidence: str, role: str = "lead synthesizer") -> str:
@@ -172,22 +211,16 @@ def supervisor_worker_collaboration(task: str) -> str:
 # Independent agents propose solutions at once; a chair picks or combines them.
 # ---------------------------------------------------------------------------
 
-def parallel_council_collaboration(task: str) -> str:
-    """
-    Collect independent perspectives, then let a council chair judge them.
-
-    Args:
-        task: The question or objective for the team.
-
-    Returns:
-        A final answer selected or combined from the independent proposals.
-    """
+async def _parallel_council_collaboration(task: str) -> str:
+    """Collect independent council perspectives concurrently."""
     roles = [
         "solve the task independently using a conservative approach",
         "solve the task independently using an innovative approach",
         "solve the task independently as a risk-focused reviewer",
     ]
-    artifacts = [ask_role(task, role) for role in roles]
+    artifacts = await asyncio.gather(
+        *(ask_role_async(task, role) for role in roles)
+    )
     evidence = "\n\n".join(
         f"Council member {index}:\n{output}"
         for index, output in enumerate(artifacts, start=1)
@@ -197,6 +230,19 @@ def parallel_council_collaboration(task: str) -> str:
         evidence,
         "council chair. Compare the independent proposals and select or combine the strongest ideas",
     )
+
+
+def parallel_council_collaboration(task: str) -> str:
+    """
+    Collect independent perspectives concurrently, then let a council chair judge them.
+
+    Args:
+        task: The question or objective for the team.
+
+    Returns:
+        A final answer selected or combined from the independent proposals.
+    """
+    return asyncio.run(_parallel_council_collaboration(task))
 
 
 # ---------------------------------------------------------------------------
@@ -215,6 +261,9 @@ def debate_collaboration(task: str, rounds: int = 1) -> str:
     Returns:
         A final answer decided by the impartial moderator.
     """
+    if rounds < 0:
+        raise ValueError("rounds must be non-negative")
+
     affirmative = ask_role(task, "argue for the strongest solution")
     negative = ask_role(task, "argue against likely solutions and propose safeguards")
     debate = f"Affirmative:\n{affirmative}\n\nNegative:\n{negative}"
