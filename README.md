@@ -9,56 +9,62 @@ A collection of practical agentic AI design patterns implemented with the OpenAI
 
 ## Patterns
 
-The patterns are grouped by the role they play in an agentic system.
+The patterns are grouped by the capability they add to an agentic system:
+**reason → control → act → remember → collaborate**.
 
-### 1. Workflow Control
+### 1. Reasoning and Task Decomposition
 
-These patterns control how work flows between steps and agents.
+These patterns help agents break down tasks, plan solutions, and improve their
+own reasoning.
 
-#### [Prompt Chaining](01-workflow-control/01-prompt-chaining/main.py)
+#### [Prompt Chaining](01-reasoning-task-decomposition/01-prompt-chaining/main.py)
 
 Decomposes a task into a sequence of steps where each LLM call processes the output of the previous one. Useful for structured pipelines like Research → Draft → Edit.
 
-#### [Routing](01-workflow-control/02-routing/main.py)
+#### [Planning](01-reasoning-task-decomposition/02-planning/main.py)
+
+Separates what to do from how to do it: a planner creates a structured sequence of steps and an executor carries them out. Dynamic replanning handles unexpected results.
+
+#### [Reflection](01-reasoning-task-decomposition/03-reflection/main.py)
+
+Lets an LLM critique and iteratively improve its own output through self-reflection or a dedicated critic-generator loop.
+
+### 2. Control Flow and Coordination
+
+These patterns decide how work is routed, split, and coordinated across steps.
+
+#### [Routing](02-control-flow-coordination/01-routing/main.py)
 
 Classifies an input and directs it to a specialised handler. Keeps prompts focused by using a lightweight router. Demonstrates two strategies:
 
 - **LLM-based router** — the model classifies intent in natural language
 - **Structured router** — the model returns JSON for unambiguous classification
 
-#### [Parallelisation](01-workflow-control/03-parallelisation/main.py)
+#### [Parallelisation](02-control-flow-coordination/02-parallelisation/main.py)
 
 Runs multiple LLM calls concurrently to reduce latency when sub-tasks are independent. Demonstrates sectioning, voting, and map-reduce strategies.
 
-#### [Planning](01-workflow-control/04-planning/main.py)
+### 3. Tools and Environment
 
-Separates what to do from how to do it: a planner creates a structured sequence of steps and an executor carries them out. Dynamic replanning handles unexpected results.
+This pattern connects an agent to capabilities outside the language model.
 
-### 2. Quality and Reliability
-
-These patterns improve outputs through critique, revision, consensus, and recovery.
-
-#### [Reflection](02-quality-reliability/01-reflection/main.py)
-
-Lets an LLM critique and iteratively improve its own output through self-reflection or a dedicated critic-generator loop.
-
-Parallelisation's voting strategy and Planning's dynamic replanning also provide reliability mechanisms.
-
-### 3. Tools and Memory
-
-These patterns connect agents to external capabilities and persistent context.
-
-#### [Tool Use](03-tools-and-memory/01-tool-use/main.py)
+#### [Tool Use](03-tools-and-environment/01-tool-use/main.py)
 
 Lets the LLM invoke external functions such as APIs, calculators, and databases, either in a single turn or through an agentic multi-step tool loop.
 
-#### [Memory Management](03-tools-and-memory/02-memory-management/main.py)
+### 4. Memory and Learning
+
+This pattern lets agents retain context, user preferences, and lessons across sessions.
+
+#### [Memory Management](04-memory-and-learning/01-memory-management/main.py)
 
 Provides short-term context management, long-term persistent memory, and learning from experience across sessions.
 
-### 4. Multi-Agent Organization
+### 5. Multi-Agent Systems
 
-#### [Multi-Agent Collaboration](04-multi-agent/01-multi-agent-collaboration/main.py)
+This pattern organizes multiple agents into teams that can collaborate on complex work.
+
+#### [Multi-Agent Collaboration](05-multi-agent-systems/01-multi-agent-collaboration/main.py)
 
 Shows sequential pipelines, supervisor-worker teams, parallel councils, peer debates, hierarchical teams, and blackboard collaboration.
 
@@ -95,32 +101,57 @@ ollama pull mistral           # recommended for multilingual / translation tasks
 
 To use a different model, update the `model` parameter in the `llm_call` function of any pattern, or pass it at the call site.
 
-### 2. Install dependencies
+### 2. Create a virtual environment
+
+Create and activate a project-local virtual environment before installing the
+dependencies:
+
+**macOS/Linux:**
+
+```bash
+python -m venv venv
+source venv/bin/activate
+```
+
+**Windows (PowerShell):**
+
+```powershell
+python -m venv venv
+.\venv\Scripts\Activate.ps1
+```
+
+When you are finished, deactivate the environment with:
+
+```bash
+deactivate
+```
+
+### 3. Install dependencies
 
 Each pattern has its own `requirements.txt`:
 
 ```bash
-pip install -r 01-workflow-control/01-prompt-chaining/requirements.txt
-pip install -r 01-workflow-control/02-routing/requirements.txt
-pip install -r 01-workflow-control/03-parallelisation/requirements.txt
-pip install -r 01-workflow-control/04-planning/requirements.txt
-pip install -r 02-quality-reliability/01-reflection/requirements.txt
-pip install -r 03-tools-and-memory/01-tool-use/requirements.txt
-pip install -r 03-tools-and-memory/02-memory-management/requirements.txt
-pip install -r 04-multi-agent/01-multi-agent-collaboration/requirements.txt
+pip install -r 01-reasoning-task-decomposition/01-prompt-chaining/requirements.txt
+pip install -r 01-reasoning-task-decomposition/02-planning/requirements.txt
+pip install -r 01-reasoning-task-decomposition/03-reflection/requirements.txt
+pip install -r 02-control-flow-coordination/01-routing/requirements.txt
+pip install -r 02-control-flow-coordination/02-parallelisation/requirements.txt
+pip install -r 03-tools-and-environment/01-tool-use/requirements.txt
+pip install -r 04-memory-and-learning/01-memory-management/requirements.txt
+pip install -r 05-multi-agent-systems/01-multi-agent-collaboration/requirements.txt
 ```
 
-### 3. Run a pattern
+### 4. Run a pattern
 
 ```bash
-python 01-workflow-control/01-prompt-chaining/main.py
-python 01-workflow-control/02-routing/main.py
-python 01-workflow-control/03-parallelisation/main.py
-python 01-workflow-control/04-planning/main.py
-python 02-quality-reliability/01-reflection/main.py
-python 03-tools-and-memory/01-tool-use/main.py
-python 03-tools-and-memory/02-memory-management/main.py
-python 04-multi-agent/01-multi-agent-collaboration/main.py
+python 01-reasoning-task-decomposition/01-prompt-chaining/main.py
+python 01-reasoning-task-decomposition/02-planning/main.py
+python 01-reasoning-task-decomposition/03-reflection/main.py
+python 02-control-flow-coordination/01-routing/main.py
+python 02-control-flow-coordination/02-parallelisation/main.py
+python 03-tools-and-environment/01-tool-use/main.py
+python 04-memory-and-learning/01-memory-management/main.py
+python 05-multi-agent-systems/01-multi-agent-collaboration/main.py
 ```
 
 ## Requirements
