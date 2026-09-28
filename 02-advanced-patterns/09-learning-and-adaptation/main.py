@@ -1,13 +1,14 @@
 """
 Learning and Adaptation Pattern
 
-Demonstrates how an agent can improve over repeated attempts by:
-1) recording outcomes,
-2) extracting reusable lessons,
-3) adapting the next plan using those lessons.
+Compares three ways an agent can change its behavior over repeated attempts:
+learning rules from feedback, reusing a similar successful approach, and
+choosing strategies based on their measured outcomes.
 """
 
+from collections import Counter
 from dataclasses import dataclass, field
+import math
 
 from dotenv import find_dotenv, load_dotenv
 from openai import OpenAI
@@ -33,10 +34,11 @@ class Attempt:
     output: str
     outcome: str
     feedback: str = ""
+    approach: str = ""
 
 
 @dataclass
-class AdaptiveMemory:
+class FeedbackLearner:
     lessons: list[str] = field(default_factory=list)
 
     def learn(self, attempt: Attempt) -> str:
@@ -61,24 +63,146 @@ class AdaptiveMemory:
         )
 
 
-def run_demo() -> None:
-    memory = AdaptiveMemory()
+def _tokens(text: str) -> Counter[str]:
+    return Counter(word.lower() for word in text.split())
 
+
+def _similarity(left: str, right: str) -> float:
+    left_tokens = _tokens(left)
+    right_tokens = _tokens(right)
+    shared = left_tokens.keys() & right_tokens.keys()
+    dot = sum(left_tokens[token] * right_tokens[token] for token in shared)
+    norm_left = math.sqrt(sum(count * count for count in left_tokens.values()))
+    norm_right = math.sqrt(sum(count * count for count in right_tokens.values()))
+    if not norm_left or not norm_right:
+        return 0.0
+    return dot / (norm_left * norm_right)
+
+
+@dataclass
+class ExampleBasedLearner:
+    """Reuse a successful task approach, not user-specific long-term memory."""
+
+    attempts: list[Attempt] = field(default_factory=list)
+    minimum_similarity: float = 0.1
+
+    def recommend(self, task: str) -> Attempt | None:
+        candidates = [
+            (_similarity(task, attempt.task), attempt)
+            for attempt in self.attempts
+            if attempt.outcome == "success" and attempt.approach
+        ]
+        if not candidates:
+            return None
+        similarity, attempt = max(candidates, key=lambda candidate: candidate[0])
+        return attempt if similarity >= self.minimum_similarity else None
+
+    def adapt_plan(self, task: str) -> str:
+        example = self.recommend(task)
+        precedent = (
+            f"Similar successful approach: {example.approach}"
+            if example
+            else "No sufficiently similar successful attempt is available."
+        )
+        return llm_call(
+            f"Task: {task}\n{precedent}\n\nCreate an improved 3-step plan.",
+            system="You adapt a plan by reusing relevant approaches from successful attempts.",
+        )
+
+
+@dataclass
+class StrategySelector:
+    """Select the strategy with the best observed mean score, trying each once."""
+
+    scores: dict[str, list[float]] = field(default_factory=dict)
+
+    def select(self, strategies: list[str]) -> str:
+        if not strategies:
+            raise ValueError("At least one strategy is required.")
+        untried = [strategy for strategy in strategies if not self.scores.get(strategy)]
+        if untried:
+            return untried[0]
+        return max(
+            strategies,
+            key=lambda strategy: sum(self.scores[strategy]) / len(self.scores[strategy]),
+        )
+
+    def record(self, strategy: str, score: float) -> None:
+        if not 0.0 <= score <= 1.0:
+            raise ValueError("Strategy scores must be between 0 and 1.")
+        self.scores.setdefault(strategy, []).append(score)
+
+
+def run_feedback_learning_demo() -> None:
+    learner = FeedbackLearner()
     failed = Attempt(
         task="Summarise customer feedback for product decisions",
         output="A generic summary with no themes or priorities.",
         outcome="failure",
         feedback="Needs clear themes, evidence, and prioritized actions.",
     )
-    lesson = memory.learn(failed)
+    lesson = learner.learn(failed)
 
-    print("=== Learning and Adaptation ===")
-    print("Learned lesson:")
-    print(f"- {lesson}\n")
+    print("=== Strategy 1: Learn a rule from feedback ===")
+    print(f"Learned lesson: {lesson}")
+    print("\nAdapted plan:")
+    print(learner.adapt_plan("Summarise new feedback batch for weekly planning"))
 
-    improved_plan = memory.adapt_plan("Summarise new feedback batch for weekly planning")
-    print("Adapted plan:")
-    print(improved_plan)
+
+def run_example_reuse_demo() -> None:
+    learner = ExampleBasedLearner(
+        attempts=[
+            Attempt(
+                task="Summarize customer feedback for product decisions",
+                output="Themes with evidence and priorities.",
+                outcome="success",
+                approach=(
+                    "Group comments into themes, cite representative quotes, "
+                    "and rank actions by frequency and customer impact."
+                ),
+            ),
+            Attempt(
+                task="Prepare a weekly engineering release",
+                output="Release checklist.",
+                outcome="success",
+                approach="Verify tests, document changes, and coordinate deployment.",
+            ),
+        ]
+    )
+    task = "Summarise support feedback and prioritize product improvements"
+    example = learner.recommend(task)
+
+    print("\n=== Strategy 2: Reuse a similar successful approach ===")
+    if example:
+        print(f"Retrieved approach: {example.approach}")
+    print("\nAdapted plan:")
+    print(learner.adapt_plan(task))
+
+
+def run_strategy_selection_demo() -> None:
+    strategies = ["feedback_rules", "successful_examples"]
+    measured_outcomes = [
+        ("feedback_rules", 0.55),
+        ("successful_examples", 0.82),
+        ("feedback_rules", 0.68),
+        ("successful_examples", 0.76),
+    ]
+    selector = StrategySelector()
+
+    print("\n=== Strategy 3: Choose using measured outcomes ===")
+    print("Illustrative evaluation history:")
+    for strategy, score in measured_outcomes:
+        selector.record(strategy, score)
+        print(f"- {strategy}: quality score {score:.2f}")
+
+    selected = selector.select(strategies)
+    print(f"Selected for the next task: {selected}")
+
+
+def run_demo() -> None:
+    run_feedback_learning_demo()
+    run_example_reuse_demo()
+    run_strategy_selection_demo()
 
 
 if __name__ == "__main__":

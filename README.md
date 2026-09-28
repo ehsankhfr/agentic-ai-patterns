@@ -4,7 +4,7 @@
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![Ollama](https://img.shields.io/badge/Ollama-local%20LLM-black?logo=ollama&logoColor=white)](https://ollama.com)
 
-Practical Python examples of agentic AI patterns, from core LLM workflows to advanced memory, adaptation, and protocol designs. The LLM-backed examples use Ollama's OpenAI-compatible API and the `llama3.2` model by default.
+Practical Python examples of agentic AI patterns, from core LLM workflows to advanced memory, adaptation, and protocol designs. Every pattern uses an LLM; the examples connect to Ollama's OpenAI-compatible API and use the `llama3.2` model by default.
 
 ## Patterns
 
@@ -25,9 +25,9 @@ Practical Python examples of agentic AI patterns, from core LLM workflows to adv
 | Pattern | What it demonstrates |
 | --- | --- |
 | [Memory Management](02-advanced-patterns/08-memory-management/main.py) | Manages conversation context, retrieves long-term memories, and learns procedural rules from experience. |
-| [Learning and Adaptation](02-advanced-patterns/09-learning-and-adaptation/main.py) | Records outcomes, extracts lessons, and uses them to adapt later plans. |
-| [Model Context Protocol (MCP)](02-advanced-patterns/10-model-context-protocol/main.py) | Implements a small protocol-style client/server interface for tools, resources, and prompts. |
-| [Goal Setting and Monitoring](02-advanced-patterns/11-goal-setting-and-monitoring/main.py) | Tracks measurable milestones and flags goals that need intervention. |
+| [Learning and Adaptation](02-advanced-patterns/09-learning-and-adaptation/main.py) | Compares feedback-derived rules, reuse of similar successful approaches, and strategy selection based on measured outcomes. |
+| [Model Context Protocol (MCP)](02-advanced-patterns/10-model-context-protocol/main.py) | Uses an LLM to select discovered tool, resource, and prompt capabilities across multiple in-process servers; it is not a wire-compatible MCP implementation. |
+| [Goal Setting and Monitoring](02-advanced-patterns/11-goal-setting-and-monitoring/main.py) | Uses an LLM to recommend corrective actions for lagging milestones in a hierarchical goal, then demonstrates a follow-up review. |
 
 ## Setup
 
@@ -73,7 +73,7 @@ Each pattern has its own `requirements.txt`. For example:
 pip install -r 01-core-patterns/01-prompt-chaining/requirements.txt
 ```
 
-Install the requirements file from the pattern's folder when running a different example. The MCP and goal-setting demos are standalone and do not make LLM calls.
+Install the requirements file from the pattern's folder when running a different example. All patterns make LLM calls and require Ollama to be running.
 
 ### 4. Run an example
 
@@ -91,5 +91,5 @@ Replace the path with the `main.py` path for any of the patterns listed above.
 ## Requirements
 
 - Python 3.10 or later
-- Ollama running locally for the LLM-backed examples
+- Ollama running locally for all patterns
 - The `llama3.2` model, or another model configured in the example
