@@ -3,158 +3,93 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
 [![Python](https://img.shields.io/badge/Python-3.10%2B-blue?logo=python&logoColor=white)](https://www.python.org/)
 [![Ollama](https://img.shields.io/badge/Ollama-local%20LLM-black?logo=ollama&logoColor=white)](https://ollama.com)
-[![OpenAI Compatible](https://img.shields.io/badge/OpenAI-compatible-412991?logo=openai&logoColor=white)](https://platform.openai.com)
 
-A collection of practical agentic AI design patterns implemented with the OpenAI API (or any OpenAI-compatible local model via [Ollama](https://ollama.com)).
+Practical Python examples of agentic AI patterns, from core LLM workflows to advanced memory, adaptation, and protocol designs. The LLM-backed examples use Ollama's OpenAI-compatible API and the `llama3.2` model by default.
 
 ## Patterns
 
-The patterns are grouped by the capability they add to an agentic system:
-**reason → control → act → remember → collaborate**.
+### Core patterns
 
-### 1. Reasoning and Task Decomposition
+| Pattern | What it demonstrates |
+| --- | --- |
+| [Prompt Chaining](01-core-patterns/01-prompt-chaining/main.py) | Composes focused LLM calls into a pipeline, with optional validation gates. |
+| [Routing](01-core-patterns/02-routing/main.py) | Classifies a request and dispatches it to a specialized handler, using natural-language or structured routing. |
+| [Parallelization](01-core-patterns/03-parallelization/main.py) | Uses concurrent calls for sectioning, voting, and map-reduce workflows. |
+| [Reflection](01-core-patterns/04-reflection/main.py) | Improves a draft through self-critique or a separate critic-generator loop. |
+| [Tool Use](01-core-patterns/05-tool-use/main.py) | Demonstrates single-turn and multi-step tool calling with simulated weather, calculator, and knowledge-base tools. |
+| [Planning](01-core-patterns/06-planning/main.py) | Creates and executes plans, with both static execution and dynamic replanning. |
+| [Multi-Agent Collaboration](01-core-patterns/07-multi-agent/main.py) | Shows sequential, supervisor-worker, parallel council, debate, hierarchical, and blackboard team topologies. |
 
-These patterns help agents break down tasks, plan solutions, and improve their
-own reasoning.
+### Advanced patterns
 
-#### [Prompt Chaining](01-reasoning-task-decomposition/01-prompt-chaining/main.py)
-
-Decomposes a task into a sequence of steps where each LLM call processes the output of the previous one. Useful for structured pipelines like Research → Draft → Edit.
-
-#### [Planning](01-reasoning-task-decomposition/02-planning/main.py)
-
-Separates what to do from how to do it: a planner creates a structured sequence of steps and an executor carries them out. Dynamic replanning handles unexpected results.
-
-#### [Reflection](01-reasoning-task-decomposition/03-reflection/main.py)
-
-Lets an LLM critique and iteratively improve its own output through self-reflection or a dedicated critic-generator loop.
-
-### 2. Control Flow and Coordination
-
-These patterns decide how work is routed, split, and coordinated across steps.
-
-#### [Routing](02-control-flow-coordination/01-routing/main.py)
-
-Classifies an input and directs it to a specialised handler. Keeps prompts focused by using a lightweight router. Demonstrates two strategies:
-
-- **LLM-based router** — the model classifies intent in natural language
-- **Structured router** — the model returns JSON for unambiguous classification
-
-#### [Parallelisation](02-control-flow-coordination/02-parallelisation/main.py)
-
-Runs multiple LLM calls concurrently to reduce latency when sub-tasks are independent. Demonstrates sectioning, voting, and map-reduce strategies.
-
-### 3. Tools and Environment
-
-This pattern connects an agent to capabilities outside the language model.
-
-#### [Tool Use](03-tools-and-environment/01-tool-use/main.py)
-
-Lets the LLM invoke external functions such as APIs, calculators, and databases, either in a single turn or through an agentic multi-step tool loop.
-
-### 4. Memory and Learning
-
-This pattern lets agents retain context, user preferences, and lessons across sessions.
-
-#### [Memory Management](04-memory-and-learning/01-memory-management/main.py)
-
-Provides short-term context management, long-term persistent memory, and learning from experience across sessions.
-
-### 5. Multi-Agent Systems
-
-This pattern organizes multiple agents into teams that can collaborate on complex work.
-
-#### [Multi-Agent Collaboration](05-multi-agent-systems/01-multi-agent-collaboration/main.py)
-
-Shows sequential pipelines, supervisor-worker teams, parallel councils, peer debates, hierarchical teams, and blackboard collaboration.
+| Pattern | What it demonstrates |
+| --- | --- |
+| [Memory Management](02-advanced-patterns/08-memory-management/main.py) | Manages conversation context, retrieves long-term memories, and learns procedural rules from experience. |
+| [Learning and Adaptation](02-advanced-patterns/09-learning-and-adaptation/main.py) | Records outcomes, extracts lessons, and uses them to adapt later plans. |
+| [Model Context Protocol (MCP)](02-advanced-patterns/10-model-context-protocol/main.py) | Implements a small protocol-style client/server interface for tools, resources, and prompts. |
+| [Goal Setting and Monitoring](02-advanced-patterns/11-goal-setting-and-monitoring/main.py) | Tracks measurable milestones and flags goals that need intervention. |
 
 ## Setup
 
-All patterns are configured to use a local **llama3.2** model via Ollama. No API key required.
+### 1. Install Ollama and download a model
 
-### 1. Install and start Ollama
+Install [Ollama](https://ollama.com/download) for your operating system, then download the default model:
 
 ```bash
-brew install ollama
 ollama pull llama3.2
 ```
 
-**Start Ollama as a background service** (auto-restarts at login):
+Make sure Ollama is running before launching an LLM-backed example. On macOS with Homebrew, you can manage it as a background service:
 
 ```bash
-brew services start ollama    # start in background
-brew services stop ollama     # stop
-brew services restart ollama  # restart
-brew services info ollama     # check status
+brew services start ollama
+brew services info ollama
+brew services stop ollama
 ```
 
-**List installed models and pull a specific version:**
+The examples connect to `http://localhost:11434/v1` and use `llama3.2`. To use another model available in Ollama, change the model value in the selected example.
 
-```bash
-ollama list                   # show locally installed models
-ollama pull llama3.2          # default (3b)
-ollama pull llama3.2:1b       # smaller/faster variant
-ollama pull llama3.2:3b       # explicit 3b variant
-ollama pull llama3.1:8b       # larger, more capable
-ollama pull mistral           # recommended for multilingual / translation tasks
-```
-
-To use a different model, update the `model` parameter in the `llm_call` function of any pattern, or pass it at the call site.
-
-### 2. Create a virtual environment
-
-Create and activate a project-local virtual environment before installing the
-dependencies:
+### 2. Create and activate a virtual environment
 
 **macOS/Linux:**
 
 ```bash
-python -m venv venv
-source venv/bin/activate
+python -m venv .venv
+source .venv/bin/activate
 ```
 
 **Windows (PowerShell):**
 
 ```powershell
-python -m venv venv
-.\venv\Scripts\Activate.ps1
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
 ```
 
-When you are finished, deactivate the environment with:
+### 3. Install a pattern's dependencies
+
+Each pattern has its own `requirements.txt`. For example:
 
 ```bash
-deactivate
+pip install -r 01-core-patterns/01-prompt-chaining/requirements.txt
 ```
 
-### 3. Install dependencies
+Install the requirements file from the pattern's folder when running a different example. The MCP and goal-setting demos are standalone and do not make LLM calls.
 
-Each pattern has its own `requirements.txt`:
+### 4. Run an example
+
+Run a pattern from the repository root. For example:
 
 ```bash
-pip install -r 01-reasoning-task-decomposition/01-prompt-chaining/requirements.txt
-pip install -r 01-reasoning-task-decomposition/02-planning/requirements.txt
-pip install -r 01-reasoning-task-decomposition/03-reflection/requirements.txt
-pip install -r 02-control-flow-coordination/01-routing/requirements.txt
-pip install -r 02-control-flow-coordination/02-parallelisation/requirements.txt
-pip install -r 03-tools-and-environment/01-tool-use/requirements.txt
-pip install -r 04-memory-and-learning/01-memory-management/requirements.txt
-pip install -r 05-multi-agent-systems/01-multi-agent-collaboration/requirements.txt
+python 01-core-patterns/01-prompt-chaining/main.py
+python 01-core-patterns/03-parallelization/main.py
+python 02-advanced-patterns/08-memory-management/main.py
+python 02-advanced-patterns/10-model-context-protocol/main.py
 ```
 
-### 4. Run a pattern
-
-```bash
-python 01-reasoning-task-decomposition/01-prompt-chaining/main.py
-python 01-reasoning-task-decomposition/02-planning/main.py
-python 01-reasoning-task-decomposition/03-reflection/main.py
-python 02-control-flow-coordination/01-routing/main.py
-python 02-control-flow-coordination/02-parallelisation/main.py
-python 03-tools-and-environment/01-tool-use/main.py
-python 04-memory-and-learning/01-memory-management/main.py
-python 05-multi-agent-systems/01-multi-agent-collaboration/main.py
-```
+Replace the path with the `main.py` path for any of the patterns listed above.
 
 ## Requirements
 
-- Python 3.10+
-- [Ollama](https://ollama.com) running as a background service (`brew services start ollama`) with `llama3.2` pulled
+- Python 3.10 or later
+- Ollama running locally for the LLM-backed examples
+- The `llama3.2` model, or another model configured in the example
