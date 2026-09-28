@@ -9,64 +9,42 @@ A collection of practical agentic AI design patterns implemented with the OpenAI
 
 ## Patterns
 
-The patterns are grouped by the capability they add to an agentic system:
-**reason → control → act → remember → collaborate**.
+### Core Patterns
 
-### 1. Reasoning and Task Decomposition
+#### Chapter 1: [Prompt Chaining](core-patterns/01-prompt-chaining/main.py)
+Sequential task decomposition.
 
-These patterns help agents break down tasks, plan solutions, and improve their
-own reasoning.
+#### Chapter 2: [Routing](core-patterns/02-routing/main.py)
+Dynamic path selection.
 
-#### [Prompt Chaining](01-reasoning-task-decomposition/01-prompt-chaining/main.py)
+#### Chapter 3: [Parallelization](core-patterns/03-parallelization/main.py)
+Concurrent processing.
 
-Decomposes a task into a sequence of steps where each LLM call processes the output of the previous one. Useful for structured pipelines like Research → Draft → Edit.
+#### Chapter 4: [Reflection](core-patterns/04-reflection/main.py)
+Self-improvement mechanisms.
 
-#### [Planning](01-reasoning-task-decomposition/02-planning/main.py)
+#### Chapter 5: [Tool Use](core-patterns/05-tool-use/main.py)
+External capability integration.
 
-Separates what to do from how to do it: a planner creates a structured sequence of steps and an executor carries them out. Dynamic replanning handles unexpected results.
+#### Chapter 6: [Planning](core-patterns/06-planning/main.py)
+Strategic task management.
 
-#### [Reflection](01-reasoning-task-decomposition/03-reflection/main.py)
+#### Chapter 7: [Multi-Agent](core-patterns/07-multi-agent/main.py)
+Collaborative systems.
 
-Lets an LLM critique and iteratively improve its own output through self-reflection or a dedicated critic-generator loop.
+### Advanced Patterns
 
-### 2. Control Flow and Coordination
+#### Chapter 8: [Memory Management](advanced-patterns/08-memory-management/main.py)
+State persistence.
 
-These patterns decide how work is routed, split, and coordinated across steps.
+#### Chapter 9: [Learning and Adaptation](advanced-patterns/09-learning-and-adaptation/main.py)
+Dynamic improvement.
 
-#### [Routing](02-control-flow-coordination/01-routing/main.py)
+#### Chapter 10: [Model Context Protocol (MCP)](advanced-patterns/10-model-context-protocol/main.py)
+Standardized interfaces.
 
-Classifies an input and directs it to a specialised handler. Keeps prompts focused by using a lightweight router. Demonstrates two strategies:
-
-- **LLM-based router** — the model classifies intent in natural language
-- **Structured router** — the model returns JSON for unambiguous classification
-
-#### [Parallelisation](02-control-flow-coordination/02-parallelisation/main.py)
-
-Runs multiple LLM calls concurrently to reduce latency when sub-tasks are independent. Demonstrates sectioning, voting, and map-reduce strategies.
-
-### 3. Tools and Environment
-
-This pattern connects an agent to capabilities outside the language model.
-
-#### [Tool Use](03-tools-and-environment/01-tool-use/main.py)
-
-Lets the LLM invoke external functions such as APIs, calculators, and databases, either in a single turn or through an agentic multi-step tool loop.
-
-### 4. Memory and Learning
-
-This pattern lets agents retain context, user preferences, and lessons across sessions.
-
-#### [Memory Management](04-memory-and-learning/01-memory-management/main.py)
-
-Provides short-term context management, long-term persistent memory, and learning from experience across sessions.
-
-### 5. Multi-Agent Systems
-
-This pattern organizes multiple agents into teams that can collaborate on complex work.
-
-#### [Multi-Agent Collaboration](05-multi-agent-systems/01-multi-agent-collaboration/main.py)
-
-Shows sequential pipelines, supervisor-worker teams, parallel councils, peer debates, hierarchical teams, and blackboard collaboration.
+#### Chapter 11: [Goal Setting and Monitoring](advanced-patterns/11-goal-setting-and-monitoring/main.py)
+Objective tracking.
 
 ## Setup
 
@@ -131,27 +109,33 @@ deactivate
 Each pattern has its own `requirements.txt`:
 
 ```bash
-pip install -r 01-reasoning-task-decomposition/01-prompt-chaining/requirements.txt
-pip install -r 01-reasoning-task-decomposition/02-planning/requirements.txt
-pip install -r 01-reasoning-task-decomposition/03-reflection/requirements.txt
-pip install -r 02-control-flow-coordination/01-routing/requirements.txt
-pip install -r 02-control-flow-coordination/02-parallelisation/requirements.txt
-pip install -r 03-tools-and-environment/01-tool-use/requirements.txt
-pip install -r 04-memory-and-learning/01-memory-management/requirements.txt
-pip install -r 05-multi-agent-systems/01-multi-agent-collaboration/requirements.txt
+pip install -r core-patterns/01-prompt-chaining/requirements.txt
+pip install -r core-patterns/02-routing/requirements.txt
+pip install -r core-patterns/03-parallelization/requirements.txt
+pip install -r core-patterns/04-reflection/requirements.txt
+pip install -r core-patterns/05-tool-use/requirements.txt
+pip install -r core-patterns/06-planning/requirements.txt
+pip install -r core-patterns/07-multi-agent/requirements.txt
+pip install -r advanced-patterns/08-memory-management/requirements.txt
+pip install -r advanced-patterns/09-learning-and-adaptation/requirements.txt
+pip install -r advanced-patterns/10-model-context-protocol/requirements.txt
+pip install -r advanced-patterns/11-goal-setting-and-monitoring/requirements.txt
 ```
 
 ### 4. Run a pattern
 
 ```bash
-python 01-reasoning-task-decomposition/01-prompt-chaining/main.py
-python 01-reasoning-task-decomposition/02-planning/main.py
-python 01-reasoning-task-decomposition/03-reflection/main.py
-python 02-control-flow-coordination/01-routing/main.py
-python 02-control-flow-coordination/02-parallelisation/main.py
-python 03-tools-and-environment/01-tool-use/main.py
-python 04-memory-and-learning/01-memory-management/main.py
-python 05-multi-agent-systems/01-multi-agent-collaboration/main.py
+python core-patterns/01-prompt-chaining/main.py
+python core-patterns/02-routing/main.py
+python core-patterns/03-parallelization/main.py
+python core-patterns/04-reflection/main.py
+python core-patterns/05-tool-use/main.py
+python core-patterns/06-planning/main.py
+python core-patterns/07-multi-agent/main.py
+python advanced-patterns/08-memory-management/main.py
+python advanced-patterns/09-learning-and-adaptation/main.py
+python advanced-patterns/10-model-context-protocol/main.py
+python advanced-patterns/11-goal-setting-and-monitoring/main.py
 ```
 
 ## Requirements
