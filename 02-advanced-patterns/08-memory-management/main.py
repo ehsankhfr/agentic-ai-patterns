@@ -57,6 +57,7 @@ client = OpenAI(
 )
 
 MODEL = "llama3.2"
+EMBED_MODEL = "nomic-embed-text"
 
 
 def llm_call(prompt: str, system: str = "", model: str = MODEL) -> str:
@@ -67,6 +68,16 @@ def llm_call(prompt: str, system: str = "", model: str = MODEL) -> str:
     messages.append({"role": "user", "content": prompt})
     response = client.chat.completions.create(model=model, messages=messages)
     return response.choices[0].message.content.strip()
+
+
+def _embed(text: str) -> list[float]:
+    """Return a dense embedding vector via Ollama's embedding endpoint."""
+    try:
+        response = client.embeddings.create(model=EMBED_MODEL, input=text)
+        return response.data[0].embedding
+    except Exception:
+        # Fall back to bag-of-words vector if the embed model is unavailable.
+        return []
 
 
 # ---------------------------------------------------------------------------
@@ -168,7 +179,16 @@ def _tokenize(text: str) -> Counter:
     return Counter(re.findall(r"[a-z0-9]+", text.lower()))
 
 
-def _cosine_similarity(a: Counter, b: Counter) -> float:
+def _cosine_similarity_dense(a: list[float], b: list[float]) -> float:
+    dot = sum(x * y for x, y in zip(a, b))
+    norm_a = math.sqrt(sum(x * x for x in a))
+    norm_b = math.sqrt(sum(x * x for x in b))
+    if not norm_a or not norm_b:
+        return 0.0
+    return dot / (norm_a * norm_b)
+
+
+def _cosine_similarity_sparse(a: Counter, b: Counter) -> float:
     shared = set(a) & set(b)
     dot = sum(a[t] * b[t] for t in shared)
     norm_a = math.sqrt(sum(v * v for v in a.values()))
@@ -176,6 +196,13 @@ def _cosine_similarity(a: Counter, b: Counter) -> float:
     if not norm_a or not norm_b:
         return 0.0
     return dot / (norm_a * norm_b)
+
+
+def _similarity(a_dense: list[float], a_sparse: Counter, b_dense: list[float], b_sparse: Counter) -> float:
+    """Use dense embeddings when available, fall back to bag-of-words."""
+    if a_dense and b_dense:
+        return _cosine_similarity_dense(a_dense, b_dense)
+    return _cosine_similarity_sparse(a_sparse, b_sparse)
 
 
 @dataclass
@@ -187,6 +214,9 @@ class Memory:
     confidence: float = 1.0
     created_at: float = field(default_factory=time.time)
     last_used_at: float | None = None
+    # Dense embedding (populated when embed model is available).
+    embedding: list[float] = field(default_factory=list)
+    # Sparse bag-of-words fallback.
     vector: Counter = field(default_factory=Counter)
 
 
@@ -220,13 +250,15 @@ class InMemoryMemoryStore:
                 memory.confidence = max(memory.confidence, confidence)
                 return memory
 
+        stripped = text.strip()
         memory = Memory(
-            text=text.strip(),
+            text=stripped,
             user_id=user_id,
             memory_type=memory_type,
             source_session_id=source_session_id,
             confidence=max(0.0, min(1.0, confidence)),
-            vector=_tokenize(text),
+            embedding=_embed(stripped),
+            vector=_tokenize(stripped),
         )
         self._memories.append(memory)
         return memory
@@ -286,15 +318,46 @@ class InMemoryMemoryStore:
         top_k: int = 3,
         memory_types: list[str] | None = None,
         min_score: float = 0.0,
+        expand_query: bool = True,
     ) -> list[str]:
-        query_vec = _tokenize(query)
-        scored = [
-            (m, _cosine_similarity(query_vec, m.vector))
-            for m in self._memories
+        """Retrieve the most relevant memories for a query.
+
+        When ``expand_query`` is True, an LLM generates additional phrasings of
+        the query so that semantically related memories surface even when exact
+        tokens don't overlap.  Results are scored with dense embeddings when
+        available and bag-of-words cosine similarity as a fallback.
+        """
+        candidates = [
+            m for m in self._memories
             if m.user_id == user_id
             and (memory_types is None or m.memory_type in memory_types)
         ]
-        scored = [pair for pair in scored if pair[1] > min_score]
+        if not candidates:
+            return []
+
+        queries = [query]
+        if expand_query:
+            expansion = llm_call(
+                f"Rewrite the following query in 2 alternative ways that might better match "
+                f"stored facts. Return only the 2 alternatives, one per line:\n\n{query}",
+                system="You help improve memory retrieval by rephrasing queries.",
+            )
+            queries += [q.strip("•- ").strip() for q in expansion.splitlines() if q.strip()]
+
+        # Score each memory as the max similarity across all query phrasings.
+        best_scores: dict[int, float] = {}
+        for q in queries:
+            q_embed = _embed(q)
+            q_sparse = _tokenize(q)
+            for idx, m in enumerate(candidates):
+                score = _similarity(q_embed, q_sparse, m.embedding, m.vector)
+                best_scores[idx] = max(best_scores.get(idx, 0.0), score)
+
+        scored = [
+            (candidates[idx], score)
+            for idx, score in best_scores.items()
+            if score > min_score
+        ]
         scored.sort(key=lambda pair: pair[1] * pair[0].confidence, reverse=True)
         for memory, _ in scored[:top_k]:
             memory.last_used_at = time.time()

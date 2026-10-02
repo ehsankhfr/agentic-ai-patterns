@@ -31,15 +31,23 @@ Practical Python examples of agentic AI patterns, from core LLM workflows to adv
 
 ## Setup
 
-### 1. Install Ollama and download a model
+### 1. Install Ollama and download models
 
-Install [Ollama](https://ollama.com/download) for your operating system, then download the default model:
+Install [Ollama](https://ollama.com/download) for your operating system, then download the default chat model:
 
 ```bash
 ollama pull llama3.2
 ```
 
-Make sure Ollama is running before launching an LLM-backed example. On macOS with Homebrew, you can manage it as a background service:
+The **Memory Management** pattern (`08-memory-management`) also uses a dedicated embedding model for semantic recall. Pull it once before running that pattern:
+
+```bash
+ollama pull nomic-embed-text
+```
+
+`nomic-embed-text` is a small (~274 MB) model that converts text to dense vectors. It enables true semantic search so that a query like "dinner suggestions" can match a stored fact like "user is vegetarian" — something bag-of-words similarity cannot do. If the model is not present, the pattern falls back to keyword-based cosine similarity automatically, but recall quality will be lower.
+
+Make sure Ollama is running before launching any example. On macOS with Homebrew, you can manage it as a background service:
 
 ```bash
 brew services start ollama
@@ -47,7 +55,7 @@ brew services info ollama
 brew services stop ollama
 ```
 
-The examples connect to `http://localhost:11434/v1` and use `llama3.2`. To use another model available in Ollama, change the model value in the selected example.
+The examples connect to `http://localhost:11434/v1` and use `llama3.2` by default. To use another model available in Ollama, change the model value at the top of the selected example.
 
 ### 2. Create and activate a virtual environment
 
@@ -92,4 +100,5 @@ Replace the path with the `main.py` path for any of the patterns listed above.
 
 - Python 3.10 or later
 - Ollama running locally for all patterns
-- The `llama3.2` model, or another model configured in the example
+- The `llama3.2` model (default), or another chat model configured in the example
+- The `nomic-embed-text` model — required for semantic recall in the Memory Management pattern; optional for all others
