@@ -1,8 +1,34 @@
 """
 Goal Setting and Monitoring Pattern
 
-Shows how hierarchical goals can be measured and monitored, with an LLM
-recommending corrective actions and replanning before a follow-up review.
+Long-running agents need a way to track progress toward complex objectives
+and course-correct when they fall behind. This pattern shows how to structure
+goals hierarchically and monitor them with an LLM-driven intervention loop:
+
+  Goal        – a named objective that can hold both direct Milestones and
+                nested sub-Goals. Overall progress is the mean of all
+                milestone progresses at every level of the tree, so a
+                high-level goal accurately reflects the state of its
+                components.
+
+  Milestone   – a single measurable target (current vs. target value) with
+                a human-readable corrective action that fires if it falls
+                below the monitoring threshold. Progress is clamped to
+                [0, 1] so partial progress is always comparable across
+                milestones with different units.
+
+  GoalMonitor – walks the full milestone tree, collects every milestone
+                below a configurable threshold, and calls the LLM once
+                with all lagging milestones in a single prompt. The LLM
+                returns a targeted corrective action for each lagging
+                milestone and a replanning recommendation for the overall
+                goal. If every milestone is on track, no LLM call is made.
+
+  run_demo()  – builds a two-level goal tree ("Ship a reliable support
+                assistant" → "Improve answer quality" / "Increase adoption"),
+                runs an initial review that triggers LLM interventions, then
+                records simulated post-action progress and runs a follow-up
+                review to show whether the corrections were sufficient.
 """
 
 import json

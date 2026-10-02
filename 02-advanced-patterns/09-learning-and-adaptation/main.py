@@ -1,9 +1,38 @@
 """
 Learning and Adaptation Pattern
 
-Compares three ways an agent can change its behavior over repeated attempts:
-learning rules from feedback, reusing a similar successful approach, and
-choosing strategies based on their measured outcomes.
+Agents that repeat similar tasks should improve over time. This pattern
+demonstrates three complementary mechanisms for doing so — none of which
+require retraining the underlying model:
+
+  1. Feedback-based rule learning – After a failed attempt the agent asks
+                                    the LLM to distil the failure and its
+                                    feedback into one concise, reusable
+                                    lesson. Accumulated lessons are injected
+                                    into the prompt when planning the next
+                                    attempt, so the same mistake is not
+                                    repeated.
+
+  2. Example-based reuse          – Successful past attempts are stored with
+                                    their approach description. When a new
+                                    task arrives, the closest successful
+                                    attempt (measured by bag-of-words cosine
+                                    similarity) is retrieved and its approach
+                                    is reused as a starting point, rather
+                                    than starting from scratch.
+
+  3. Strategy selection           – Multiple strategies are tried across
+                                    attempts and their quality scores are
+                                    recorded. Before each new attempt the
+                                    agent picks the strategy with the best
+                                    observed mean score, trying any untried
+                                    strategy first to ensure fair comparison.
+
+The three mechanisms operate at different levels of abstraction:
+feedback-based learning captures what went wrong in a specific attempt;
+example-based reuse transfers a proven method to a similar task; strategy
+selection tracks which broad approach works best across many tasks and
+routes future attempts accordingly.
 """
 
 from collections import Counter

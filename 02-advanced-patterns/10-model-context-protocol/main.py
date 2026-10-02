@@ -1,9 +1,39 @@
 """
 Model Context Protocol (MCP) Pattern
 
-An LLM uses an in-process, protocol-style simulation of tool, resource, and
-prompt capabilities, including client-side discovery across multiple servers.
-This is not a wire-compatible MCP implementation and does not use the MCP SDK.
+Real-world agents need to consume capabilities from multiple, independently
+operated servers (databases, APIs, internal tools) through a shared protocol
+rather than direct function calls. MCP defines three capability kinds that
+cover the majority of agent needs:
+
+  - Tools     – callable functions with side effects (e.g. arithmetic,
+                web search, sending an email). The LLM requests a tool
+                call; the client executes it and returns the result.
+
+  - Resources – read-only data sources the agent can look up (e.g. a
+                knowledge base, a file, a configuration record). The
+                LLM requests a resource; the client fetches and returns
+                the content.
+
+  - Prompts   – server-managed prompt templates the agent retrieves and
+                then injects into its own context (e.g. a company-approved
+                summarisation prompt or a structured output template).
+
+This file simulates the MCP interaction pattern in-process without a
+network layer or the official MCP SDK:
+
+  MCPServer   – registers capability handlers and dispatches MCPRequests
+                to the correct handler, returning structured MCPResponses.
+
+  MCPClient   – holds references to one or more named servers, exposes a
+                `discover()` method that aggregates all capabilities across
+                servers, and a `call()` method that routes a request to the
+                right server.
+
+  run_demo()  – builds two servers (knowledge, workspace), lets the LLM
+                discover their capabilities, then drives a multi-turn tool-
+                calling loop in which the LLM selects and invokes the right
+                capability for each sub-task until it produces a final answer.
 """
 
 import json
