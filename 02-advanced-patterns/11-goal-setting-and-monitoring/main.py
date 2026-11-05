@@ -26,9 +26,11 @@ goals hierarchically and monitor them with an LLM-driven intervention loop:
 
   run_demo()  – builds a two-level goal tree ("Ship a reliable support
                 assistant" → "Improve answer quality" / "Increase adoption"),
-                runs an initial review that triggers LLM interventions, then
-                records simulated post-action progress and runs a follow-up
-                review to show whether the corrections were sufficient.
+                then loops: review → LLM interventions → record simulated
+                post-action progress → review again. The loop stops as soon
+                as every milestone is on track, or when the simulated
+                measurements run out. Each review receives the previous
+                plan so the LLM can adjust it rather than repeat itself.
 """
 
 import json
@@ -101,7 +103,9 @@ class MonitorReport:
 class GoalMonitor:
     threshold: float = 0.7
 
-    def review(self, goal: Goal) -> MonitorReport:
+    def review(
+        self, goal: Goal, previous_interventions: str | None = None
+    ) -> MonitorReport:
         behind_schedule = [
             {
                 "goal": path,
@@ -116,12 +120,22 @@ class GoalMonitor:
         ]
         interventions = None
         if behind_schedule:
+            history = ""
+            if previous_interventions:
+                history = (
+                    "Previous corrective plan (milestones have been re-measured "
+                    "since it was applied):\n"
+                    f"{previous_interventions}\n\n"
+                    "Adjust the plan based on what has moved. Do not repeat "
+                    "advice for milestones that are now on track.\n\n"
+                )
             interventions = llm_call(
                 (
                     f"Top-level goal: {goal.title}\n"
                     f"Current overall progress: {goal.overall_progress():.0%}\n"
                     f"Milestones below the {self.threshold:.0%} progress threshold:\n"
                     f"{json.dumps(behind_schedule, indent=2)}\n\n"
+                    f"{history}"
                     "Recommend a concise corrective plan. Give one targeted action "
                     "for each lagging milestone, then state how to replan or adjust "
                     "priorities across the subgoals. Do not claim the metrics changed."
@@ -189,21 +203,33 @@ def run_demo() -> None:
         for milestone in subgoal.milestones:
             print(f"  - {milestone.name}: {milestone.progress:.0%}")
 
-    first_review = monitor.review(goal)
-    print_report("Initial review", first_review)
+    # Simulated measurements taken after each round of corrective actions.
+    # Progress is uneven on purpose: some milestones recover quickly, others
+    # need several rounds, so the loop has to iterate before everything is
+    # back above the threshold.
+    measurements_by_round = [
+        {"Intent routing accuracy": 0.75, "Resolved conversations": 120, "Active support teams": 52},
+        {"Resolved conversations": 135, "Active support teams": 55},
+        {"Resolved conversations": 150, "Active support teams": 60},
+    ]
 
-    if not first_review.on_track:
-        print("\nNext review: record progress after the recommended actions.")
-        measured_progress = {
-            "Intent routing accuracy": 0.84,
-            "Resolved conversations": 150,
-            "Active support teams": 72,
-        }
+    report = monitor.review(goal)
+    print_report("Initial review", report)
+
+    for round_number, measured in enumerate(measurements_by_round, start=1):
+        if report.on_track:
+            break
+        print(f"\n--- Round {round_number}: record progress after the recommended actions ---")
         for _, milestone in goal.iter_milestones():
-            if milestone.name in measured_progress:
-                milestone.current = measured_progress[milestone.name]
+            if milestone.name in measured:
+                milestone.current = measured[milestone.name]
+        report = monitor.review(goal, previous_interventions=report.interventions)
+        print_report(f"Review {round_number}", report)
 
-    print_report("Follow-up review", monitor.review(goal))
+    if report.on_track:
+        print("\nAll milestones are back on track.")
+    else:
+        print(f"\nStill behind after {len(measurements_by_round)} rounds; escalate to a human.")
 
 
 if __name__ == "__main__":
