@@ -24,6 +24,28 @@ goals hierarchically and monitor them with an LLM-driven intervention loop:
                 milestone and a replanning recommendation for the overall
                 goal. If every milestone is on track, no LLM call is made.
 
+  StallDetector – flags a milestone that has started but stopped moving
+                across consecutive reviews. Automated retries that keep
+                failing look exactly like this, and more LLM advice will not
+                fix them.
+
+  Escalation  – human in the loop. When the agent should not continue alone
+                it pauses, has the LLM write a handoff brief (what the
+                customer wants, what was tried, what is blocked), and asks a
+                human to decide. The human can:
+                  - HANDLE the blocked step themselves and report the details
+                    back (for example a refund reference). The agent records
+                    the milestone as done, uses the details in its revised
+                    plan, and the loop resumes;
+                  - GUIDE the agent, whose revised plan is built around the
+                    advice before the loop resumes;
+                  - TAKE OVER the ticket (the loop ends).
+                Escalation fires when:
+                  - a milestone stalls (handle, guide or take over),
+                  - the round budget runs out while still behind (take over),
+                  - triage cannot match the message to any known issue
+                    (take over; there is no goal to resume).
+
   run_demo()  – a customer-support automation scenario. A customer sends a
                 free-text message; the LLM identifies which known issue types
                 it contains (goal setting), and a playbook per issue turns
@@ -31,14 +53,20 @@ goals hierarchically and monitor them with an LLM-driven intervention loop:
                 request" → one subgoal per issue + "Close the ticket").
                 It then loops: review → LLM interventions → record simulated
                 support-agent progress → review again. The loop stops as soon
-                as every milestone is on track, or when the simulated
-                progress runs out and the ticket is escalated to a human.
-                Each review receives the previous plan so the LLM can adjust
-                it rather than repeat itself. Every LLM prompt is printed.
+                as every milestone is on track, or when a human takes over.
+                In the demo the refund keeps failing, so the stall detector
+                escalates, a human issues the refund themselves and reports
+                the reference back to the agent. The human is simulated so
+                the demo runs unattended; pass --interactive to answer the
+                escalation yourself. Each review receives the previous plan
+                so the LLM can adjust it rather than repeat itself. Every
+                LLM prompt is printed.
 """
 
+import argparse
 import json
 import textwrap
+from collections.abc import Callable
 from dataclasses import dataclass, field
 
 from dotenv import find_dotenv, load_dotenv
@@ -119,7 +147,10 @@ class GoalMonitor:
     threshold: float = 0.7
 
     def review(
-        self, goal: Goal, previous_interventions: str | None = None
+        self,
+        goal: Goal,
+        previous_interventions: str | None = None,
+        human_input: str | None = None,
     ) -> MonitorReport:
         # Step 1: walk the goal tree and compare every milestone to the threshold.
         all_milestones = goal.iter_milestones()
@@ -168,6 +199,18 @@ class GoalMonitor:
                     "Adjust the plan based on what has moved. Do not repeat "
                     "advice for milestones that are now on track.\n\n"
                 )
+            if human_input:
+                print("[Monitor]   Including the human agent's input in the prompt.")
+                history += (
+                    "Update from a human support lead (authoritative; it "
+                    "overrides any conflicting earlier advice):\n"
+                    f"{human_input}\n\n"
+                    "Build the revised plan around this update. If an action "
+                    "involves telling the customer what was done, include the "
+                    "details the human reported (such as reference numbers) "
+                    "word for word. Only plan actions for the milestones listed "
+                    "above.\n\n"
+                )
             system_prompt = (
                 "You are a goal-monitoring agent. Use the supplied measurements "
                 "to recommend practical corrective actions and a revised plan."
@@ -189,6 +232,42 @@ class GoalMonitor:
             progress=goal.overall_progress(),
             interventions=interventions,
         )
+
+
+@dataclass
+class StallDetector:
+    """Flags milestones that have started but stopped moving between reviews.
+
+    A milestone counts as idle for one review when it is in progress (above 0%),
+    still below the threshold, and unchanged since the previous review. Milestones
+    at 0% are not flagged: they are usually waiting on earlier work (for example
+    the customer cannot confirm a resolution that has not happened yet), and the
+    round budget catches work that never starts.
+    """
+
+    max_idle_reviews: int = 2
+    _last_progress: dict[tuple[str, str], float] = field(default_factory=dict)
+    _idle_reviews: dict[tuple[str, str], int] = field(default_factory=dict)
+
+    def observe(self, goal: Goal, threshold: float) -> list[str]:
+        """Record the latest measurements; return names of milestones now stalled."""
+        stalled = []
+        for path, milestone in goal.iter_milestones():
+            key = (path, milestone.name)
+            idle = (
+                0 < milestone.progress < threshold
+                and self._last_progress.get(key) == milestone.progress
+            )
+            self._idle_reviews[key] = self._idle_reviews.get(key, 0) + 1 if idle else 0
+            self._last_progress[key] = milestone.progress
+            if self._idle_reviews[key] >= self.max_idle_reviews:
+                stalled.append(milestone.name)
+        return stalled
+
+    def reset(self) -> None:
+        """Clear idle counts after a human has intervened, so the same stall
+        is not reported again before the agent has had a chance to act on it."""
+        self._idle_reviews.clear()
 
 
 @dataclass
@@ -278,15 +357,20 @@ def build_goal(issue_keys: list[str]) -> Goal:
     return Goal(title="Resolve the customer's support request", subgoals=subgoals)
 
 
-def print_goal_tree(goal: Goal) -> None:
-    print(f"Goal: {goal.title} ({goal.overall_progress():.0%} overall)")
+def format_goal_tree(goal: Goal) -> str:
+    lines = [f"Goal: {goal.title} ({goal.overall_progress():.0%} overall)"]
     for subgoal in goal.subgoals:
-        print(f"- {subgoal.title}: {subgoal.overall_progress():.0%}")
+        lines.append(f"- {subgoal.title}: {subgoal.overall_progress():.0%}")
         for milestone in subgoal.milestones:
-            print(
+            lines.append(
                 f"  - {milestone.name}: {milestone.current:g}/{milestone.target:g} steps "
                 f"= {milestone.progress:.0%}"
             )
+    return "\n".join(lines)
+
+
+def print_goal_tree(goal: Goal) -> None:
+    print(format_goal_tree(goal))
 
 
 def print_report(label: str, report: MonitorReport) -> None:
@@ -297,6 +381,112 @@ def print_report(label: str, report: MonitorReport) -> None:
     print("Status: Intervention needed.")
     print("Recommended corrective plan:")
     print(report.interventions)
+
+
+# ---------------------------------------------------------------------------
+# Human-in-the-loop escalation
+# ---------------------------------------------------------------------------
+
+
+@dataclass
+class HumanDecision:
+    # "handled":  the human completed the blocked step; the note carries the details
+    # "guide":    the human advised the agent; the note is the advice
+    # "take_over": the human owns the ticket from here; the note is the handoff
+    action: str
+    note: str
+
+
+# A reviewer receives the handoff brief and whether the agent can resume (if not,
+# the only valid answer is "take_over"), and returns the human's decision.
+# Swapping this function is the only thing that changes between the unattended
+# demo and a real console or ticketing UI.
+Reviewer = Callable[[str, bool], HumanDecision]
+
+
+def simulated_human(brief: str, can_resume: bool) -> HumanDecision:
+    """Stand-in for a support lead so the demo runs unattended."""
+    if can_resume:
+        return HumanDecision(
+            "handled",
+            "The payment API is down, so I issued the refund manually in the "
+            "billing console for order #4821. Refund reference RF-20931.",
+        )
+    return HumanDecision("take_over", "I will contact the customer directly.")
+
+
+def console_human(brief: str, can_resume: bool) -> HumanDecision:
+    """Ask the person running the script (the brief has already been printed)."""
+    choice = "t"
+    if can_resume:
+        choice = ""
+        while choice not in ("h", "g", "t"):
+            choice = input(
+                "  [Human] [h]andle it yourself and report back, [g]uide the agent, "
+                "or [t]ake over the ticket? "
+            ).strip().lower()
+    if choice in ("h", "g"):
+        prompt = (
+            "  [Human] Details to report back to the agent (for example a refund reference): "
+            if choice == "h"
+            else "  [Human] Guidance for the agent: "
+        )
+        note = ""
+        while not note:
+            note = input(prompt).strip()
+        return HumanDecision("handled" if choice == "h" else "guide", note)
+    note = input("  [Human] Handoff note (optional): ").strip()
+    return HumanDecision("take_over", note or "No note provided.")
+
+
+def describe_decision(decision: HumanDecision, stalled: list[str]) -> str:
+    """Phrase a human's answer as facts the monitor can plan around."""
+    if decision.action == "handled":
+        return (
+            f"The human completed {', '.join(stalled)} themselves, so it is now done. "
+            f"Details they reported: {decision.note}"
+        )
+    return f"Guidance for the agent: {decision.note}"
+
+
+def ticket_context(message: str, goal: Goal, actions: list[str]) -> str:
+    """The facts a human needs to pick the ticket up cold.
+
+    The monitor's latest LLM-written plan is left out on purpose: it is long,
+    it is advice rather than fact, and for a stalled milestone it is the advice
+    that has already failed, so it only pushes the brief toward repeating it.
+    """
+    taken = "\n".join(f"- {action}" for action in actions) or "- none yet"
+    return (
+        f'Customer message: "{message}"\n\n'
+        f"Goal progress:\n{format_goal_tree(goal)}\n\n"
+        f"Actions taken so far:\n{taken}"
+    )
+
+
+def escalate(
+    reason: str, context: str, reviewer: Reviewer, can_resume: bool
+) -> HumanDecision:
+    """Pause the agent, brief a human, and return their decision."""
+    print(f"[Escalation] Reason: {reason}")
+    print(f"[Escalation] Calling the LLM ({MODEL}) to write the handoff brief:")
+    brief = traced_llm_call(
+        f"Why this is being escalated: {reason}\n\n{context}\n\n"
+        "Write the handoff brief for the human agent.",
+        system=(
+            "You write handoff briefs for human customer-support agents. Use only "
+            "the facts supplied; do not invent actions or results. Reply with the "
+            "brief only, no preamble, in at most 5 short lines: what the customer "
+            "needs, what has been done, what is blocked, and a final line starting "
+            "'Decision needed:' stating what you need the human to decide."
+        ),
+    )
+    print("[Escalation] Handoff brief for the human:")
+    print(textwrap.indent(brief, "  "))
+    print("[Escalation] Agent paused; waiting for the human's decision.")
+    decision = reviewer(brief, can_resume)
+    print(f"[Escalation] Human decision: {decision.action} - {decision.note}")
+    return decision
 
 
 def apply_measurements(goal: Goal, measured: dict[str, float]) -> None:
@@ -314,12 +504,14 @@ def apply_measurements(goal: Goal, measured: dict[str, float]) -> None:
         )
 
 
-def run_demo() -> None:
+def run_demo(interactive: bool = False) -> None:
     customer_message = (
         "Hi, my order #4821 arrived with a cracked screen and I was also charged "
         "twice for it. I need this sorted before Friday."
     )
     monitor = GoalMonitor(threshold=0.7)
+    stalls = StallDetector(max_idle_reviews=2)
+    reviewer: Reviewer = console_human if interactive else simulated_human
 
     print("=== Goal Setting and Monitoring: Customer Support Automation ===")
 
@@ -330,17 +522,33 @@ def run_demo() -> None:
     print("[Goal setting] Step 1 - Identify the issues in the customer's message")
     issues = identify_issues(customer_message)
     if not issues:
-        print("[Goal setting] No known issue type matched; hand the ticket to a human agent.")
+        print("[Goal setting] No known issue type matched, so there is no goal to pursue.")
+        print("\n=== Escalation: triage failed ===")
+        decision = escalate(
+            "Triage could not match the message to any known issue type.",
+            f'Customer message: "{customer_message}"\n\nNo goal was created.',
+            reviewer,
+            can_resume=False,
+        )
+        print(f"\nTicket handed to a human agent. Note: {decision.note}")
         return
     print(f"[Goal setting] Step 2 - Build the goal tree from playbooks: {', '.join(issues)}")
     goal = build_goal(issues)
     print_goal_tree(goal)
     print(f"Monitoring threshold: {monitor.threshold:.0%} per milestone")
+    print(
+        f"Escalation policy: a milestone that is in progress but unchanged for "
+        f"{stalls.max_idle_reviews} reviews, or still behind when the "
+        "rounds run out, goes to a human."
+    )
 
     # Simulated support-agent activity between reviews. Progress is uneven on
-    # purpose (the refund fails once before succeeding), so the loop has to
-    # iterate before every milestone is back above the threshold. Values are
-    # steps completed per milestone.
+    # purpose: the payment API keeps timing out, so the refund stalls at 1 of 3
+    # steps. Retrying is not working and more LLM advice will not change that,
+    # which is the case for a human. After the escalation (between rounds 4 and
+    # 5) the refund is done, either by the human (who reports the details back)
+    # or by the agent following the human's guidance, and the customer confirms.
+    # Values are steps completed per milestone.
     activity_by_round = [
         (
             "Agent verified the damage photo and found the duplicate charge.",
@@ -351,20 +559,29 @@ def run_demo() -> None:
             {"Replacement shipped": 1, "Refund issued": 1},
         ),
         (
-            "Stock allocated and replacement shipped; refund retried successfully.",
-            {"Replacement shipped": 3, "Refund issued": 3},
+            "Stock allocated and replacement shipped; refund retried but the payment API timed out again.",
+            {"Replacement shipped": 3, "Refund issued": 1},
         ),
         (
-            "Customer replied and confirmed the resolution.",
-            {"Customer confirmed resolution": 1},
+            "Refund retried a third time; the payment API is still timing out.",
+            {"Refund issued": 1},
+        ),
+        (
+            "Refund completed and the customer was sent a summary of what was done; "
+            "customer replied and confirmed the resolution.",
+            {"Refund issued": 3, "Customer confirmed resolution": 1},
         ),
     ]
+    actions_taken: list[str] = []
 
     print("\n=== Stage 3: Initial review ===")
     report = monitor.review(goal)
     print_report("Initial review", report)
+    stalls.observe(goal, monitor.threshold)  # baseline for stall detection
 
     rounds_run = 0
+    escalations = 0
+    handover: HumanDecision | None = None
     for round_number, (activity, measured) in enumerate(activity_by_round, start=1):
         if report.on_track:
             print("\nEvery milestone is on track; stopping the loop early.")
@@ -372,22 +589,76 @@ def run_demo() -> None:
         rounds_run = round_number
         print(f"\n=== Stage 4 (round {round_number}): Act, re-measure, review again ===")
         print(f"Support agent activity: {activity}")
+        actions_taken.append(activity)
         print("Recording progress:")
         apply_measurements(goal, measured)
         report = monitor.review(goal, previous_interventions=report.interventions)
         print_report(f"Review {round_number}", report)
 
+        stalled = stalls.observe(goal, monitor.threshold)
+        if not stalled:
+            continue
+
+        print(f"\n=== Escalation (after round {round_number}): human in the loop ===")
+        escalations += 1
+        decision = escalate(
+            f"No progress for {stalls.max_idle_reviews} consecutive reviews on: "
+            f"{', '.join(stalled)}.",
+            ticket_context(customer_message, goal, actions_taken),
+            reviewer,
+            # Handling or guiding only helps if another round remains.
+            can_resume=round_number < len(activity_by_round),
+        )
+        if decision.action == "take_over":
+            handover = decision
+            break
+        if decision.action == "handled":
+            # The human did the blocked work: record it as progress, then let the
+            # agent plan the rest using the details they reported.
+            print("\nRecording the human's work:")
+            apply_measurements(
+                goal,
+                {m.name: m.target for _, m in goal.iter_milestones() if m.name in stalled},
+            )
+            actions_taken.append(
+                f"A human completed {', '.join(stalled)} and reported: {decision.note}"
+            )
+        else:
+            actions_taken.append(f"Human guidance received: {decision.note}")
+        stalls.reset()
+        print("\nRe-planning with the human's input:")
+        report = monitor.review(goal, human_input=describe_decision(decision, stalled))
+        print_report("Revised review", report)
+
+    if handover is None and not report.on_track:
+        print("\n=== Escalation (round budget exhausted): human in the loop ===")
+        escalations += 1
+        handover = escalate(
+            f"Still behind after {len(activity_by_round)} rounds.",
+            ticket_context(customer_message, goal, actions_taken),
+            reviewer,
+            can_resume=False,
+        )
+
     print("\n=== Stage 5: Outcome ===")
     print(f"Rounds of corrective action: {rounds_run}")
+    print(f"Human escalations: {escalations}")
     print(f"Final overall progress: {report.progress:.0%}")
-    if report.on_track:
-        print("Ticket resolved: every milestone is on track.")
+    if handover is not None:
+        print(f"Ticket handed to a human agent. Note: {handover.note}")
+    elif escalations:
+        print("Ticket resolved after human help: every milestone is on track.")
     else:
-        print(
-            f"Still behind after {len(activity_by_round)} rounds; "
-            "escalate the ticket to a human agent."
-        )
+        print("Ticket resolved: every milestone is on track.")
 
 
 if __name__ == "__main__":
-    run_demo()
+    parser = argparse.ArgumentParser(
+        description="Goal setting and monitoring demo with human-in-the-loop escalation."
+    )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="answer escalations yourself instead of using the simulated human",
+    )
+    run_demo(interactive=parser.parse_args().interactive)

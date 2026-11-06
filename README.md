@@ -27,7 +27,7 @@ Practical Python examples of agentic AI patterns, from core LLM workflows to adv
 | [Memory Management](02-advanced-patterns/08-memory-management/main.py) | Manages conversation context, retrieves long-term memories, and learns procedural rules from experience. |
 | [Learning and Adaptation](02-advanced-patterns/09-learning-and-adaptation/main.py) | Compares feedback-derived rules, reuse of similar successful approaches, and strategy selection based on measured outcomes. |
 | [Model Context Protocol (MCP)](02-advanced-patterns/10-model-context-protocol/main.py) | Uses an LLM to select discovered tool, resource, and prompt capabilities across multiple in-process servers; it is not a wire-compatible MCP implementation. |
-| [Goal Setting and Monitoring](02-advanced-patterns/11-goal-setting-and-monitoring/main.py) | Uses an LLM to recommend corrective actions for lagging milestones in a hierarchical goal, then repeats review and re-measurement rounds until every milestone is on track. |
+| [Goal Setting and Monitoring](02-advanced-patterns/11-goal-setting-and-monitoring/main.py) | Uses an LLM to recommend corrective actions for lagging milestones in a hierarchical goal, then repeats review and re-measurement rounds until every milestone is on track. Escalates to a human, with an LLM-written handoff brief, when a milestone stalls, the round budget runs out, or triage fails; the human can do the blocked step and report back, guide the agent, or take over. |
 
 ### Capability patterns
 
