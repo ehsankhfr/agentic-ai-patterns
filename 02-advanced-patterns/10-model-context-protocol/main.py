@@ -54,6 +54,11 @@ def llm_call(
     model: str = MODEL,
     tools: list[dict[str, Any]] | None = None,
 ) -> Any:
+    """Send the conversation to the model and return its reply message.
+
+    The returned message carries either text `content` or `tool_calls` when the
+    model chose to invoke one of the supplied `tools`.
+    """
     response = client.chat.completions.create(
         model=model,
         messages=messages,
@@ -64,6 +69,13 @@ def llm_call(
 
 @dataclass
 class MCPRequest:
+    """A request sent to a server to run one of its capabilities.
+
+    `capability` is the capability kind ("tool", "resource" or "prompt"),
+    `operation` is the name registered under that kind, and `payload` holds the
+    arguments passed to the handler.
+    """
+
     capability: str
     operation: str
     payload: dict[str, Any]
@@ -71,6 +83,8 @@ class MCPRequest:
 
 @dataclass
 class MCPResponse:
+    """A server's structured reply: `ok` plus either `data` or an `error` message."""
+
     ok: bool
     data: dict[str, Any]
     error: str | None = None
@@ -78,6 +92,8 @@ class MCPResponse:
 
 @dataclass(frozen=True)
 class Capability:
+    """One capability a server offers: its kind, name and a short description."""
+
     kind: str
     name: str
     description: str
@@ -85,6 +101,12 @@ class Capability:
 
 @dataclass(frozen=True)
 class DiscoveredCapability:
+    """A `Capability` tagged with the name of the server that offers it.
+
+    This is what the client returns from discovery, so callers know where to
+    route a request.
+    """
+
     server: str
     kind: str
     name: str
@@ -92,7 +114,10 @@ class DiscoveredCapability:
 
 
 class MCPServer:
+    """An in-process server that registers capability handlers and serves requests."""
+
     def __init__(self, name: str) -> None:
+        """Create an empty server; `name` is how clients address it."""
         self.name = name
         self._handlers: dict[
             tuple[str, str],
@@ -106,6 +131,10 @@ class MCPServer:
         description: str,
         handler: Callable[[dict[str, Any]], dict[str, Any]],
     ) -> None:
+        """Register a handler under (`kind`, `operation`).
+
+        Raises ValueError if that pair is already registered.
+        """
         key = (kind, operation)
         if key in self._handlers:
             raise ValueError(f"Capability already registered: {kind}.{operation}")
@@ -113,9 +142,15 @@ class MCPServer:
         self._handlers[key] = (handler, capability)
 
     def discover(self) -> list[Capability]:
+        """List every capability this server has registered."""
         return [capability for _, capability in self._handlers.values()]
 
     def handle(self, request: MCPRequest) -> MCPResponse:
+        """Dispatch a request to its handler and wrap the outcome in an MCPResponse.
+
+        An unregistered capability or a handler that raises yields an error
+        response rather than an exception.
+        """
         registered = self._handlers.get((request.capability, request.operation))
         if registered is None:
             return MCPResponse(
@@ -131,12 +166,16 @@ class MCPServer:
 
 
 class MCPClient:
+    """Connects to one or more named servers and routes capability calls to them."""
+
     def __init__(self, servers: list[MCPServer]) -> None:
+        """Index the servers by name; raises ValueError if two share a name."""
         self.servers = {server.name: server for server in servers}
         if len(self.servers) != len(servers):
             raise ValueError("Server names must be unique.")
 
     def discover(self) -> list[DiscoveredCapability]:
+        """Aggregate the capabilities of every connected server, tagged by server."""
         return [
             DiscoveredCapability(
                 server=server.name,
@@ -155,6 +194,11 @@ class MCPClient:
         operation: str,
         payload: dict[str, Any],
     ) -> MCPResponse:
+        """Build a request and send it to the named server.
+
+        `capability` is the kind ("tool", "resource" or "prompt") and `operation`
+        the registered name. An unknown server yields an error response.
+        """
         server = self.servers.get(server_name)
         if server is None:
             return MCPResponse(
@@ -171,6 +215,12 @@ class MCPClient:
 
 
 def build_servers() -> list[MCPServer]:
+    """Create the demo servers and register their capabilities.
+
+    - knowledge: a calculator tool, a topic-lookup resource and a report-summary
+      prompt template.
+    - workspace: a release-notes resource.
+    """
     knowledge_server = MCPServer("knowledge")
     knowledge_server.register(
         "tool",
@@ -210,6 +260,14 @@ def build_servers() -> list[MCPServer]:
 
 
 def run_demo() -> None:
+    """Run the discovery and tool-calling demo end to end.
+
+    Discover the capabilities across both servers and describe them to the LLM
+    through a single `call_capability` tool. Then loop: the LLM requests a
+    capability, the call is validated against the discovered list and routed
+    through the client, and the result goes back to the LLM. The loop ends when
+    the LLM answers without a tool call; exceeding the round limit raises.
+    """
     client = MCPClient(build_servers())
     capabilities = client.discover()
     capability_catalog = [
