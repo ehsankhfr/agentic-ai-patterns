@@ -1,54 +1,43 @@
 """
 Exception Handling and Recovery Pattern
 
-An agent fails in more places than an ordinary program does. The model API
-throttles or times out. The model replies with something that is not valid JSON,
-or that a tool rejects. A tool goes down. The model keeps repeating a call that
-cannot succeed. A multi-step plan fails halfway, after side effects have already
-happened. Without a plan for each, one bad call derails the whole task. This
-pattern shows how to classify a failure, respond in proportion to it, and
-recover without losing the user's goal. Five complementary mechanisms are
-demonstrated, ordered from the cheapest response to the most disruptive:
+An agent that works in the real world cannot assume everything will go right.
+Tools time out, services return errors or garbage, the model API throttles, the
+model itself produces a bad tool call or an answer that ignores its data, and a
+multi-step action can fail halfway through. This pattern gives an agent a way to
+notice each of these, respond in proportion, and return to a stable state
+instead of crashing or, worse, inventing an answer to hide the failure. It has
+three stages that feed one another:
 
-  1. Retry with backoff           – Model API calls fail with rate limits,
-                                    timeouts and 5xx errors. SDK exceptions are
-                                    classified; transient ones are retried with
-                                    growing, jittered delays and a hard attempt
-                                    cap. Bad credentials and over-long prompts
-                                    are never retried, because repeating them
-                                    cannot help.
+  1. Error detection   – Spot the problem. The agent checks HTTP status codes
+                         (404 and 500 mean different things), enforces a
+                         response deadline, validates the shape of every tool
+                         payload, and reviews the model's answer against the
+                         data it was given.
 
-  2. Fallback chains and          – When the primary model is down the agent
-     graceful degradation           walks an ordered chain (primary model →
-                                    backup model → static notice). When a tool
-                                    is down it falls back to a cache, and the
-                                    LLM is told how fresh its data is, so it
-                                    answers honestly instead of inventing an
-                                    answer to hide the failure.
+  2. Error handling    – Respond right away, cheapest option first: log the
+                         incident, retry transient errors with backoff (and a
+                         longer deadline each time), fall back to a backup model
+                         or a cached copy, degrade gracefully and say so, and
+                         notify a human when quality has dropped.
 
-  3. Self-correction              – In the agent loop, a tool error is returned
-                                    to the model as an observation. The model
-                                    reads it and calls the tool again with fixed
-                                    arguments. Malformed model output (not JSON,
-                                    unknown tool) is handled the same way.
+  3. Recovery          – Return to a stable state: send tool errors back to the
+                         model so it corrects its own call, roll back a failed
+                         multi-step action with compensating "undo" steps,
+                         escalate to a human with a handoff note, and diagnose
+                         the root causes from the incident log afterwards.
 
-  4. Loop guardrails              – A circuit breaker disables a tool after
-                                    repeated consecutive failures, and a step
-                                    budget bounds the whole run. Together they
-                                    stop an agent that retries a call that can
-                                    never succeed.
+Scenario: a customer-support agent works through its queue on a bad day. The
+order API is slow and sometimes returns broken payloads, then goes down, the LLM
+provider has an outage, the model replies with an answer that ignores the data,
+and a refund fails at its last step, after money has already moved. Every event is written to
+one incident log, tagged [detect], [handle], [recover] or [notify], so you can
+read each ticket as a trip around the detect → handle → recover loop.
 
-  5. Rollback and escalation      – When an agent's multi-step plan fails
-                                    part-way, compensating "undo" actions run
-                                    for the completed steps in reverse order,
-                                    leaving the system consistent. The LLM then
-                                    writes a handoff note so a human can pick up
-                                    from a known state.
-
-All five depend on telling errors apart. Transient errors may succeed if
-repeated, permanent errors will not, and invalid-request errors mean the request
-(or the model's output) is wrong and must be changed rather than resent.
-Provider and tool failures in the demos are simulated; the LLM calls are real.
+The order status tickets are a layered pipeline over shared state (live API →
+cached fallback → response agent). The refund ticket is a model-driven tool loop
+with a step budget and a circuit breaker. Failures in the demo are simulated;
+the LLM calls are real.
 """
 
 import itertools
@@ -56,22 +45,21 @@ import json
 import random
 import re
 import time
+from collections import Counter
 from collections.abc import Callable, Iterator
+from concurrent.futures import ThreadPoolExecutor
+from concurrent.futures import TimeoutError as DeadlineExceeded
 from dataclasses import dataclass, field
-from datetime import date
 from functools import partial
+from typing import Any
 
 from dotenv import find_dotenv, load_dotenv
 from openai import (
     APIConnectionError,
     APIStatusError,
     APITimeoutError,
-    AuthenticationError,
-    BadRequestError,
     InternalServerError,
     OpenAI,
-    RateLimitError,
-    UnprocessableEntityError,
 )
 
 load_dotenv(find_dotenv())
@@ -79,7 +67,7 @@ load_dotenv(find_dotenv())
 client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
 MODEL = "llama3.2"
 
-SUPPORT_SYSTEM = "You are a concise support assistant. Use only the supplied data."
+SUPPORT_SYSTEM = "You are a concise support assistant. Use only the supplied data. Never invent facts."
 
 
 def llm_chat(messages: list[dict], model: str = MODEL) -> str:
@@ -113,8 +101,42 @@ def extract_json_object(text: str) -> dict:
 
 
 # ---------------------------------------------------------------------------
-# Error taxonomy
-# Every failure is mapped onto one of three classes; the class, not the original
+# The incident log
+# One record of everything the agent noticed and did. Writing it down is itself
+# part of error handling, and the diagnosis at the end of the shift reads it back.
+# ---------------------------------------------------------------------------
+
+@dataclass
+class IncidentLog:
+    ticket: str = "-"
+    entries: list[str] = field(default_factory=list)
+    problems: list[tuple[str, str, str]] = field(default_factory=list)  # (component, ticket, what was detected)
+
+    def _add(self, stage: str, text: str) -> None:
+        line = f"[{stage:<7}] {self.ticket} {text}"
+        self.entries.append(line)
+        print(f"  {line}")
+
+    def detected(self, component: str, text: str) -> None:
+        self.problems.append((component, self.ticket, text))
+        self._add("detect", f"{component}: {text}")
+
+    def handled(self, text: str) -> None:
+        self._add("handle", text)
+
+    def recovered(self, text: str) -> None:
+        self._add("recover", text)
+
+    def notify(self, audience: str, text: str) -> None:
+        self._add("notify", f"{audience}: {text}")
+
+
+INCIDENTS = IncidentLog()
+
+
+# ---------------------------------------------------------------------------
+# Stage 1: Error detection
+# Every failure is mapped onto a small taxonomy. The class, not the original
 # exception type, decides the response.
 # ---------------------------------------------------------------------------
 
@@ -122,40 +144,69 @@ class AgentError(Exception):
     """Base class for failures the agent knows how to reason about."""
 
     kind = "error"
+    hint = ""  # advice appended to the error when it is shown to the model
+    opens_circuit = False  # True: one failure disables the tool for the rest of the task
 
 
 class TransientError(AgentError):
     """Temporary failure (timeout, rate limit, 5xx). Repeating the call may succeed."""
 
     kind = "transient"
+    hint = "It was already retried automatically."
 
 
 class PermanentError(AgentError):
     """Failure that repeating the same call will not fix (bad credentials, service down)."""
 
     kind = "permanent"
+    hint = "Retrying will not help; do not repeat this call."
+    opens_circuit = True
+
+
+class NotFoundError(PermanentError):
+    """The thing asked for does not exist. That is an answer, not an outage."""
+
+    kind = "not_found"
+    opens_circuit = False  # another order id may still work
 
 
 class InvalidRequestError(AgentError):
     """The request or the model's output is wrong. It must be changed, not resent."""
 
     kind = "invalid_request"
+    hint = "Fix the arguments and try again."
+
+
+class HttpError(Exception):
+    """HTTP failure raised by a simulated backend. `status_code` mirrors the
+    attribute on the openai SDK's APIStatusError."""
+
+    def __init__(self, status_code: int, message: str):
+        super().__init__(f"{status_code} {message}")
+        self.status_code = status_code
 
 
 def classify_error(exc: Exception) -> AgentError:
-    """Map an SDK or tool exception onto the taxonomy. Unknown errors fail closed."""
+    """Map an SDK or backend exception onto the taxonomy. Unknown errors fail closed."""
     if isinstance(exc, AgentError):
         return exc
-    if isinstance(exc, (APITimeoutError, APIConnectionError, RateLimitError, InternalServerError)):
-        # A 429 for an exhausted quota is really permanent; inspect the error
-        # code before treating every rate limit as retryable in production.
+    if isinstance(exc, (APITimeoutError, APIConnectionError)):
         error: AgentError = TransientError(f"{type(exc).__name__}: {exc}")
-    elif isinstance(exc, (BadRequestError, UnprocessableEntityError)):
-        # Typically a malformed request or a prompt that exceeds the context
-        # window. The fix is to change the request (e.g. summarise older turns).
-        error = InvalidRequestError(f"{type(exc).__name__}: {exc}")
-    elif isinstance(exc, APIStatusError):
-        error = PermanentError(f"{type(exc).__name__}: {exc}")  # 401, 403, 404, ...
+    elif isinstance(exc, (APIStatusError, HttpError)):
+        text = str(exc) if isinstance(exc, HttpError) else f"{type(exc).__name__}: {exc}"
+        status = exc.status_code
+        if status == 404:
+            error = NotFoundError(text)
+        elif status in (400, 422):
+            # Typically a malformed request, or a prompt that exceeds the context
+            # window. The fix is to change the request (e.g. summarise older turns).
+            error = InvalidRequestError(text)
+        elif status in (408, 429) or status >= 500:
+            # A 429 for an exhausted quota is really permanent; inspect the error
+            # code before treating every rate limit as retryable in production.
+            error = TransientError(text)
+        else:
+            error = PermanentError(text)  # 401, 403, ...
     else:
         # Repeating a failure we do not understand is a guess, so do not retry it.
         error = PermanentError(f"unexpected {type(exc).__name__}: {exc}")
@@ -163,11 +214,67 @@ def classify_error(exc: Exception) -> AgentError:
     return error
 
 
+def call_with_deadline(operation: Callable[[], Any], seconds: float) -> Any:
+    """Detect an unusually slow response: give up if it takes longer than `seconds`."""
+    pool = ThreadPoolExecutor(max_workers=1)
+    try:
+        return pool.submit(operation).result(timeout=seconds)
+    except DeadlineExceeded:
+        raise TransientError(f"no response within {seconds:.2f}s") from None
+    finally:
+        pool.shutdown(wait=False)
+
+
+def validate_order(record: object) -> dict:
+    """Detect a malformed tool output before the agent trusts it."""
+    if not isinstance(record, dict):
+        raise TransientError(f"malformed payload: expected an object, got {type(record).__name__}")
+    missing = [key for key in ("order_id", "status", "carrier", "eta") if not record.get(key)]
+    if missing:
+        raise TransientError(f"malformed payload: missing {', '.join(missing)}")
+    return record
+
+
+def check_grounding(answer: str, required: dict[str, tuple[str, ...]]) -> None:
+    """Detect an incoherent or ungrounded model answer. `required` maps a label to
+    the alternative phrasings of a fact the answer must state. A cheap rule-based
+    reviewer; a second LLM can play the same role for fuzzier checks."""
+    text = answer.lower()
+    missing = [label for label, options in required.items() if not any(o.lower() in text for o in options)]
+    if missing:
+        raise InvalidRequestError(f"does not mention {', '.join(missing)}")
+
+
 # ---------------------------------------------------------------------------
-# Simulated provider trouble
-# Faults are raised before the call reaches the real model, as the SDK would
-# raise them, so the recovery code handles genuine openai exception types.
+# Stage 2: Error handling
+# Retry with backoff, model fallback, notification. Every step is logged.
 # ---------------------------------------------------------------------------
+
+def retry_with_backoff(
+    operation: Callable[[int], Any], label: str, max_attempts: int = 3, base_delay: float = 0.1
+) -> Any:
+    """Retry transient errors with growing, jittered delays. `operation` receives
+    the attempt number so it can adjust its parameters (e.g. a longer deadline).
+    Permanent and invalid-request errors are raised immediately: repeating them
+    cannot help."""
+    for attempt in range(1, max_attempts + 1):
+        try:
+            return operation(attempt)
+        except Exception as exc:
+            error = classify_error(exc)
+            INCIDENTS.detected(label, f"{error.kind} - {error}")
+            if not isinstance(error, TransientError):
+                INCIDENTS.handled(f"{label}: not retrying ({error.kind})")
+                raise error
+            if attempt == max_attempts:
+                INCIDENTS.handled(f"{label}: giving up after {attempt} attempts")
+                raise error
+            # Jitter keeps many agents that failed together from all retrying at once.
+            delay = base_delay * 2 ** (attempt - 1) * random.uniform(0.5, 1.0)
+            INCIDENTS.handled(f"{label}: retry {attempt}/{max_attempts - 1} in {delay:.2f}s")
+            time.sleep(delay)
+    raise AssertionError("unreachable")  # the loop always returns or raises
+
 
 @dataclass
 class StubResponse:
@@ -184,211 +291,222 @@ def api_error(error_class: type[APIStatusError], status: int, message: str) -> A
     return error_class(message, response=StubResponse(status), body=None)
 
 
-def timeout_error() -> APITimeoutError:
-    return APITimeoutError(request=None)
-
-
 @dataclass
 class ModelEndpoint:
-    """A model the agent can call. `faults` are raised one per call; once they run
-    out, calls reach the real model. Use itertools.repeat(error) for an outage."""
+    """A model the agent can call. `faults` are used one per call, in order: an
+    exception is raised, a string is returned as the model's (bad) reply. Once they
+    run out, calls reach the real model. itertools.repeat(error) is an outage."""
 
+    name: str
     model: str
-    faults: Iterator[Exception] = field(default_factory=lambda: iter(()))
-    calls: int = 0
+    faults: Iterator[Exception | str] = field(default_factory=lambda: iter(()))
 
     def ask(self, prompt: str, system: str = "") -> str:
-        self.calls += 1
         fault = next(self.faults, None)
-        if fault is not None:
+        if isinstance(fault, Exception):
             raise fault
+        if fault is not None:
+            return fault
         return llm_call(prompt, system, self.model)
 
 
-# ---------------------------------------------------------------------------
-# Strategy 1: Retry with exponential backoff
-# Only transient errors are retried; anything else propagates immediately.
-# ---------------------------------------------------------------------------
-
-def retry_with_backoff(
-    operation: Callable[[], str], max_attempts: int = 4, base_delay: float = 0.25
-) -> str:
-    for attempt in range(1, max_attempts + 1):
+def ask_models(models: list[ModelEndpoint], prompt: str) -> str | None:
+    """Walk the model chain (primary → backup). None means every model is down."""
+    for position, endpoint in enumerate(models):
         try:
-            return operation()
-        except Exception as exc:
-            error = classify_error(exc)
-            if not isinstance(error, TransientError) or attempt == max_attempts:
-                raise error
-            # Jitter keeps many agents that were throttled together from all
-            # retrying at the same instant.
-            delay = base_delay * 2 ** (attempt - 1) * random.uniform(0.5, 1.0)
-            print(f"  attempt {attempt} failed ({error}); retrying in {delay:.2f}s")
-            time.sleep(delay)
-    raise AssertionError("unreachable")  # the loop always returns or raises
-
-
-def run_retry_demo() -> None:
-    print("=== Strategy 1: Retry with backoff (model API calls) ===")
-    print("Transient API errors are retried:")
-    endpoint = ModelEndpoint(
-        MODEL,
-        faults=iter(
-            [
-                api_error(RateLimitError, 429, "429 rate limit exceeded"),
-                timeout_error(),
-            ]
-        ),
-    )
-    prompt = (
-        "Customer question: 'Where is my order 4821?'\n"
-        "Order system returned: Order 4821: shipped via UPS, estimated delivery Thursday.\n"
-        "Reply in two sentences."
-    )
-    answer = retry_with_backoff(lambda: endpoint.ask(prompt, SUPPORT_SYSTEM))
-    print(f"  succeeded on call {endpoint.calls}")
-    print(answer)
-
-    print("\nPermanent and invalid-request errors are not retried:")
-    for error in (
-        api_error(AuthenticationError, 401, "401 invalid API key"),
-        api_error(BadRequestError, 400, "400 context_length_exceeded: prompt is too long"),
-    ):
-        endpoint = ModelEndpoint(MODEL, faults=iter([error]))
-        try:
-            retry_with_backoff(partial(endpoint.ask, prompt, SUPPORT_SYSTEM))
-        except AgentError as exc:
-            print(f"  {type(exc).__name__} after {endpoint.calls} call: {exc}")
+            return retry_with_backoff(
+                lambda attempt, e=endpoint: e.ask(prompt, SUPPORT_SYSTEM),
+                label=endpoint.name,
+                max_attempts=2,
+            )
+        except AgentError:
+            if position + 1 < len(models):
+                INCIDENTS.handled(f"fallback: {endpoint.name} -> {models[position + 1].name}")
+    return None
 
 
 # ---------------------------------------------------------------------------
-# Strategy 2: Fallback chains and graceful degradation
-# Try sources in order. For models the chain is primary → backup → static
-# notice. For tools the chain is live data → cache, and the LLM is told how good
-# the data it got actually is.
+# Order status tickets: a layered pipeline over shared state
+# primary_handler (live API) → fallback_handler (cache) → response_agent (LLM).
+# Each agent reads and writes `state`, so later agents know what earlier ones
+# managed to do.
 # ---------------------------------------------------------------------------
 
-@dataclass
-class Source:
-    name: str
-    fetch: Callable[[], str]
-    stale: bool = False
+ORDERS = {
+    "4821": {"order_id": "4821", "status": "shipped", "carrier": "UPS", "eta": "Thursday"},
+    "7310": {"order_id": "7310", "status": "shipped", "carrier": "DHL", "eta": "Monday"},
+}
+CACHE = {"7310": ORDERS["7310"]}  # snapshot taken three hours ago
 
 
 @dataclass
-class FetchResult:
-    data: str | None
-    source: str | None
-    stale: bool
-    failures: list[str]
+class OrderAPI:
+    """Simulated live order service. `script` says what each call does, in order
+    (`slow`, `malformed` or `500`); after that calls behave normally."""
+
+    script: Iterator[str]
+
+    def lookup(self, order_id: str) -> dict:
+        behaviour = next(self.script, "ok")
+        if behaviour == "500":
+            raise HttpError(500, "internal server error")
+        if behaviour == "malformed":
+            return {"order_id": order_id, "status": "shipped"}  # carrier and eta missing
+        if behaviour == "slow":
+            time.sleep(0.5)
+        if order_id not in ORDERS:
+            raise HttpError(404, f"order {order_id} not found")
+        return ORDERS[order_id]
 
 
-def fetch_with_fallback(sources: list[Source]) -> FetchResult:
-    failures: list[str] = []
-    for source in sources:
-        try:
-            return FetchResult(source.fetch(), source.name, source.stale, failures)
-        except (TransientError, PermanentError) as exc:
-            failures.append(f"{source.name}: {exc}")
-            print(f"  {source.name} failed ({exc})")
-    return FetchResult(None, None, False, failures)
+def primary_handler(state: dict, api: OrderAPI) -> None:
+    """Agent 1: ask the live order API."""
+
+    def lookup(attempt: int) -> dict:
+        deadline = 0.2 * 2 ** (attempt - 1)  # adjusted parameter: each retry waits longer
+        if attempt > 1:
+            INCIDENTS.handled(f"live order API: attempt {attempt} with a {deadline:.1f}s deadline")
+        return validate_order(call_with_deadline(partial(api.lookup, state["order_id"]), deadline))
+
+    try:
+        state["data"] = retry_with_backoff(lookup, "live order API")
+        state["source"] = "live order API"
+    except AgentError as exc:
+        state["primary_error"] = exc
 
 
-def model_source(name: str, endpoint: ModelEndpoint, prompt: str) -> Source:
-    # Each model gets a short retry budget of its own before the chain moves on.
-    return Source(
-        name,
-        lambda: retry_with_backoff(
-            lambda: endpoint.ask(prompt, SUPPORT_SYSTEM), max_attempts=2, base_delay=0.1
-        ),
-    )
+def fallback_handler(state: dict) -> None:
+    """Agent 2: runs only if agent 1 failed. Tries the cache and degrades gracefully."""
+    error = state.get("primary_error")
+    if error is None:
+        return
+    if isinstance(error, NotFoundError):
+        INCIDENTS.handled("no fallback: the order does not exist, so no other source can help")
+        state["problem"] = f"order {state['order_id']} does not exist in our system"
+        return
+    INCIDENTS.handled("fallback: live order API -> cached snapshot")
+    snapshot = CACHE.get(state["order_id"])
+    if snapshot is None:
+        INCIDENTS.detected("cached snapshot", "cache miss")
+        state["problem"] = "the order system is unavailable and there is no cached copy"
+        return
+    state.update(data=snapshot, source="cached snapshot", stale=True)
+    INCIDENTS.handled("graceful degradation: answering from the cached snapshot and flagging it as possibly out of date")
+    INCIDENTS.notify("ops on-call", "live order API is failing; the agent is serving cached data")
 
 
-def answer_with_degradation(question: str, result: FetchResult) -> str:
-    if result.data is None:
-        status = "No data could be retrieved. Failures: " + "; ".join(result.failures)
-        instruction = (
-            "Apologise briefly, say you cannot confirm the answer right now, do "
-            "not guess, and suggest one next step the customer can take."
+def template_reply(state: dict) -> str:
+    """Last-resort reply built directly from the data, with no model involved."""
+    data = state["data"]
+    if data is None:
+        return f"Sorry, I cannot give you an answer right now: {state['problem']}. Please contact support."
+    text = f"Order {data['order_id']} is {data['status']} with {data['carrier']}, estimated delivery {data['eta']}."
+    return text + (" This comes from a cached copy and may be out of date." if state["stale"] else "")
+
+
+STALE_WARNING = ("cached", "out of date", "outdated", "out-of-date", "not up to date", "may have changed", "not be current")
+
+
+def response_agent(state: dict, models: list[ModelEndpoint]) -> str:
+    """Agent 3: write the customer reply, honestly for whatever data we ended up with."""
+    data, question = state["data"], state["question"]
+    if data is None:
+        prompt = (
+            f"Customer question: {question}\nProblem: {state['problem']}\n"
+            "Apologise briefly. Do not guess or invent order details. Suggest one next step "
+            "the customer can take, without phone numbers, email addresses or placeholders. "
+            "Keep it to two sentences."
         )
-    elif result.stale:
-        status = f"Data from '{result.source}' (may be out of date): {result.data}"
-        instruction = (
-            "Write two sentences. Sentence 1 answers the question and includes "
-            "the exact figure from the data. Sentence 2 says the figure comes "
-            "from a cached copy and may be out of date."
+        required: dict[str, tuple[str, ...]] = {}
+    elif state["stale"]:
+        prompt = (
+            f"Customer question: {question}\n"
+            f"Order data from a cached copy that may be out of date: order {data['order_id']} is "
+            f"{data['status']}, carrier {data['carrier']}, estimated delivery {data['eta']}.\n"
+            "Write two sentences. Sentence 1 gives the status and delivery day. Sentence 2 says the "
+            "figures come from a cached copy and may be out of date."
         )
+        required = {f"delivery day {data['eta']}": (data["eta"],), "a stale-data warning": STALE_WARNING}
     else:
-        status = f"Data from '{result.source}': {result.data}"
-        instruction = "Answer using the data."
-    return llm_call(
-        f"Customer question: {question}\n{status}\n{instruction} Keep it to two sentences.",
-        system="You are a support assistant. Never state facts that are not in the supplied data.",
-    )
+        prompt = (
+            f"Customer question: {question}\n"
+            f"Order data (live): order {data['order_id']} is {data['status']}, carrier "
+            f"{data['carrier']}, estimated delivery {data['eta']}.\n"
+            "Answer in two sentences. State the carrier and the delivery day."
+        )
+        required = {f"carrier {data['carrier']}": (data["carrier"],), f"delivery day {data['eta']}": (data["eta"],)}
+
+    feedback = ""
+    for attempt in (1, 2):
+        draft = ask_models(models, prompt + feedback)
+        if draft is None:
+            INCIDENTS.detected("model chain", "every model is unavailable")
+            break
+        try:
+            check_grounding(draft, required)
+            return draft
+        except InvalidRequestError as exc:
+            INCIDENTS.detected("response review", f"the reply {exc}")
+            feedback = f"\n\nA reviewer rejected your previous reply because it {exc}. Rewrite it using the data. Reply with the customer message only."
+            if attempt == 1:
+                INCIDENTS.recovered("self-correction: asking the model to rewrite its reply")
+    INCIDENTS.handled("graceful degradation: using a template reply built directly from the data")
+    return template_reply(state)
 
 
-def run_fallback_demo() -> None:
-    print("\n=== Strategy 2: Fallback chains and graceful degradation ===")
+@dataclass
+class StatusTicket:
+    ticket_id: str
+    question: str
+    order_id: str
+    api: OrderAPI
+    models: list[ModelEndpoint]
 
-    # In production the backup is a different provider or a smaller model. Here
-    # both resolve to the same local model so the demo needs only one pull.
-    static_notice = Source(
-        "static notice",
-        lambda: "Our assistant is temporarily unavailable. Please try again in a few minutes.",
-    )
-    prompt = (
-        "Customer question: 'How do I reset my password?'\n"
-        "Help article: Open Settings > Security and choose 'Reset password'.\n"
-        "Reply in two sentences."
-    )
 
-    print("Primary model down, backup model available:")
+def status_tickets() -> list[StatusTicket]:
+    def models(primary_faults: Iterator[Exception | str] = iter(())) -> list[ModelEndpoint]:
+        return [ModelEndpoint("primary model", MODEL, primary_faults), ModelEndpoint("backup model", MODEL)]
+
+    # In production the backup is a different provider or a smaller model. Here both
+    # resolve to the same local model so the demo needs only one pull.
+    ignores_data = "Thanks for contacting us! Your invoice has been paid in full and your account is in good standing."
     outage = api_error(InternalServerError, 503, "503 model overloaded")
-    primary = ModelEndpoint(MODEL, faults=itertools.repeat(outage))
-    backup = ModelEndpoint(MODEL)
-    result = fetch_with_fallback(
-        [model_source("primary model", primary, prompt), model_source("backup model", backup, prompt), static_notice]
-    )
-    print(f"  answered by: {result.source}")
-    print(result.data)
+    return [
+        # Slow response, then a broken payload, then success. The model's first draft ignores the data.
+        StatusTicket("T-101", "Where is order 4821?", "4821", OrderAPI(iter(["slow", "malformed", "slow"])), models(iter([ignores_data]))),
+        # The order API is down for good. A cached copy exists.
+        StatusTicket("T-102", "Where is order 7310?", "7310", OrderAPI(itertools.repeat("500")), models()),
+        # The order does not exist, and the primary model provider is down.
+        StatusTicket("T-103", "Where is order 0001?", "0001", OrderAPI(iter(())), models(itertools.repeat(outage))),
+    ]
 
-    print("\nEvery model down:")
-    primary = ModelEndpoint(MODEL, faults=itertools.repeat(outage))
-    backup = ModelEndpoint(MODEL, faults=itertools.repeat(outage))
-    result = fetch_with_fallback(
-        [model_source("primary model", primary, prompt), model_source("backup model", backup, prompt), static_notice]
-    )
-    print(f"  answered by: {result.source}")
-    print(result.data)
 
-    def live_api() -> str:
-        raise PermanentError("503 service unavailable")
-
-    def cache() -> str:
-        return "Standard plan: $42/month (cached 3 hours ago)"
-
-    def empty_cache() -> str:
-        raise PermanentError("cache miss")
-
-    question = "How much is the Standard plan?"
-
-    print("\nPricing tool: live API down, cache available:")
-    result = fetch_with_fallback([Source("live API", live_api), Source("cache", cache, stale=True)])
-    print(answer_with_degradation(question, result))
-
-    print("\nPricing tool: every source down:")
-    result = fetch_with_fallback(
-        [Source("live API", live_api), Source("cache", empty_cache, stale=True)]
-    )
-    print(answer_with_degradation(question, result))
+def handle_status_ticket(ticket: StatusTicket) -> None:
+    INCIDENTS.ticket = ticket.ticket_id
+    print(f'\n--- {ticket.ticket_id}: "{ticket.question}" ---')
+    state = {
+        "question": ticket.question,
+        "order_id": ticket.order_id,
+        "data": None,
+        "source": None,
+        "stale": False,
+        "problem": None,
+    }
+    primary_handler(state, ticket.api)
+    fallback_handler(state)
+    reply = response_agent(state, ticket.models)
+    print(f"Reply (data: {state['source'] or 'none'}): {reply}")
 
 
 # ---------------------------------------------------------------------------
-# The agent loop shared by Strategies 3 and 4
-# Each turn the model replies with one JSON action: call a tool or finish. Tool
-# failures come back as observations, so the model can react to them. The
-# harness, not the model, enforces the limits.
+# Stage 3: Recovery
+# Self-correction in a tool loop, rollback of multi-step actions, escalation to a
+# human, and diagnosis from the incident log.
 # ---------------------------------------------------------------------------
+
+# The tool loop. Each turn the model replies with one JSON action: call a tool or
+# finish. Tool failures come back as observations so the model can react to them.
+# The harness, not the model, enforces the limits.
 
 ACTION_PROTOCOL = (
     "Reply with exactly ONE JSON object per turn and nothing else.\n"
@@ -416,8 +534,8 @@ class AgentRun:
 
 
 def chat(messages: list[dict]) -> str:
-    """One model turn, retried on transient API failures (Strategy 1)."""
-    return retry_with_backoff(lambda: llm_chat(messages))
+    """One model turn, retried on transient API failures."""
+    return retry_with_backoff(lambda attempt: llm_chat(messages), label="agent model")
 
 
 def parse_action(raw: str) -> dict:
@@ -425,7 +543,7 @@ def parse_action(raw: str) -> dict:
     try:
         action = extract_json_object(raw)
     except ValueError:
-        raise InvalidRequestError("your reply was not a JSON object. Reply with exactly one JSON object.")
+        raise InvalidRequestError("your reply was not a JSON object. Reply with exactly one JSON object.") from None
     if action.get("action") == "final" and isinstance(action.get("answer"), str):
         return action
     if (
@@ -439,39 +557,43 @@ def parse_action(raw: str) -> dict:
     )
 
 
-def circuit_open_message(name: str, failures: int, last_error: object) -> str:
+def circuit_open_message(name: str, last_error: object) -> str:
     return (
-        f"ERROR (circuit_open): '{name}' failed {failures} times in a row (last error: "
-        f"{last_error}) and is disabled for this task. Do not call it again. Finish now: "
-        "tell the user plainly what you could not do and what they can do next."
+        f"ERROR (circuit_open): '{name}' is disabled for this task (last error: {last_error}). "
+        "Do not call it again. Finish now: tell the user plainly what you could not do and "
+        "what they can do next."
     )
 
 
-def execute_tool(
-    registry: dict[str, Tool], action: dict, failures: dict[str, int], failure_limit: int
-) -> str:
+def execute_tool(registry: dict[str, Tool], action: dict, failures: dict[str, int], failure_limit: int) -> str:
     """Run one tool call and return the observation the model will see."""
     name = action["tool"]
     tool = registry.get(name)
     if tool is None:
+        INCIDENTS.detected("agent model", f"called unknown tool {name!r}")
         return f"ERROR (invalid_request): unknown tool {name!r}. Available tools: {', '.join(registry)}"
     if failures.get(name, 0) >= failure_limit:
         # Circuit is open: do not touch the failing tool again.
-        return circuit_open_message(name, failures[name], "not executed")
+        return circuit_open_message(name, "not executed")
     try:
-        # Transient tool errors are retried here, cheaply, so the model only
-        # sees a failure that survived the retries.
-        result = retry_with_backoff(
-            lambda: tool.run(action.get("arguments", {})), max_attempts=2, base_delay=0.1
-        )
+        # Transient tool errors are retried here, cheaply, so the model only sees
+        # a failure that survived the retries.
+        result = retry_with_backoff(lambda attempt: tool.run(action.get("arguments", {})), f"tool {name}", max_attempts=2)
     except AgentError as exc:
-        failures[name] = failures.get(name, 0) + 1
+        # A permanent failure opens the circuit at once; other failures open it
+        # after `failure_limit` in a row.
+        failures[name] = failure_limit if exc.opens_circuit else failures.get(name, 0) + 1
         if failures[name] >= failure_limit:
-            return circuit_open_message(name, failures[name], exc)
-        return f"ERROR ({exc.kind}): {exc}"
+            INCIDENTS.handled(f"circuit breaker opened for {name}: the agent will not call it again")
+            return circuit_open_message(name, exc)
+        if isinstance(exc, InvalidRequestError):
+            INCIDENTS.recovered(f"self-correction: sending the {name} error back to the model")
+        return f"ERROR ({exc.kind}): {exc}. {exc.hint}"
+    if failures.get(name):
+        INCIDENTS.recovered(f"self-correction worked: {name} succeeded after {failures[name]} failed attempt(s)")
     failures[name] = 0  # a success closes the circuit again
-    # Models tend to keep acting after a side-effecting call succeeds (a second,
-    # duplicate ticket, say), so the observation says what to do next.
+    # Models tend to keep acting after a side-effecting call succeeds (a duplicate
+    # refund, say), so the observation says what to do next.
     return f"RESULT: {result} If this fulfils the request, finish now."
 
 
@@ -483,8 +605,10 @@ def run_agent(
     max_steps: int = 6,
     failure_limit: int = 3,
 ) -> AgentRun:
-    """Run the loop. `first_turn` replaces the model's first reply (used to
-    script a known mistake); every later turn is the real model."""
+    """Run the loop. `first_turn` replaces the model's first reply (used to script
+    a known mistake); every later turn is the real model. The step budget bounds
+    the whole run; the circuit breaker disables a tool that fails permanently or
+    keeps failing, so the agent never retries an action that cannot succeed."""
     registry = {tool.name: tool for tool in tools}
     catalogue = "\n".join(f"- {tool.usage}" for tool in tools)
     messages = [
@@ -503,6 +627,7 @@ def run_agent(
         try:
             action = parse_action(raw)
         except InvalidRequestError as exc:
+            INCIDENTS.detected("agent model", "output is not a valid action")
             observation = f"ERROR ({exc.kind}): {exc}"
         else:
             if action["action"] == "final":
@@ -513,6 +638,7 @@ def run_agent(
 
     # The budget ran out before the model finished. Stop it from acting and ask
     # for an honest status report instead of letting it run on.
+    INCIDENTS.handled(f"step budget of {max_steps} used up")
     messages.append(
         {
             "role": "user",
@@ -525,96 +651,9 @@ def run_agent(
     return AgentRun(chat(messages), max_steps, "step_budget", open_circuits())
 
 
-# ---------------------------------------------------------------------------
-# Strategy 3: Self-correction
-# The tool's error message is the model's diagnosis input. A good error says what
-# is wrong, what is expected, and any context the model could not know.
-# ---------------------------------------------------------------------------
-
-def create_ticket(args: dict) -> str:
-    """Simulated tool that validates its arguments strictly."""
-    problems = []
-    if not str(args.get("title", "")).strip():
-        problems.append("title must be a non-empty string")
-    if args.get("priority") not in ("low", "medium", "high"):
-        problems.append(f"priority must be one of low, medium, high (got {args.get('priority')!r})")
-    try:
-        due = date.fromisoformat(str(args.get("due_date")))
-    except ValueError:
-        problems.append(
-            f"due_date must be an ISO date YYYY-MM-DD (got {args.get('due_date')!r}); today is {date.today()}"
-        )
-    else:
-        if due < date.today():
-            problems.append(f"due_date {due} is in the past; today is {date.today()}")
-    if problems:
-        raise InvalidRequestError("; ".join(problems))
-    return f"ticket TCK-1042 created (title={args['title']!r}, priority={args['priority']}, due {args['due_date']})."
-
-
-TICKET_TOOL = Tool(
-    "create_ticket",
-    'create_ticket(title: non-empty string, priority: "low" | "medium" | "high", '
-    "due_date: ISO date YYYY-MM-DD, not in the past) - opens a support ticket",
-    create_ticket,
-)
-TICKETING_AGENT = "You are a ticketing assistant for the support team."
-
-
-def run_self_correction_demo() -> None:
-    request = "Open a high-priority ticket to fix the checkout page bug, due tomorrow."
-    # The model's first turn is scripted with two invalid arguments so that the
-    # demo always exercises recovery. Every later turn is the real model.
-    flawed_turn = json.dumps(
-        {
-            "action": "call_tool",
-            "tool": "create_ticket",
-            "arguments": {"title": "Fix checkout page bug", "priority": "urgent", "due_date": "tomorrow"},
-        }
-    )
-
-    print("\n=== Strategy 3: Self-correction (tool errors are observations) ===")
-    print(f"Request: {request}")
-    run = run_agent(request, [TICKET_TOOL], TICKETING_AGENT, first_turn=flawed_turn)
-    print(f"Agent answer: {run.answer}")
-
-
-# ---------------------------------------------------------------------------
-# Strategy 4: Loop guardrails
-# A model can keep calling a tool that will never succeed, burning tokens and
-# time on near-identical attempts. The circuit breaker disables a tool after
-# `failure_limit` consecutive failures; the step budget caps the run no matter
-# what the model does. The agent then reports honestly and a human takes over.
-# ---------------------------------------------------------------------------
-
-def run_guardrail_demo() -> None:
-    request = "Look up order 4821 and tell me its delivery status."
-
-    def order_api(_args: dict) -> str:
-        raise TransientError("503 order service unavailable")
-
-    order_tool = Tool(
-        "lookup_order",
-        "lookup_order(order_id: string) - returns the shipping status of a customer order",
-        order_api,
-    )
-
-    print("\n=== Strategy 4: Loop guardrails (circuit breaker and step budget) ===")
-    print(f"Request: {request}")
-    print("The order service is down for the whole run.")
-    run = run_agent(request, [order_tool], "You are a support assistant. Never guess.", max_steps=6, failure_limit=2)
-    print(f"Agent answer: {run.answer}")
-    print(f"Stopped by: {run.stopped_by} after {run.steps} steps; disabled tools: {run.open_circuits or 'none'}")
-    if run.open_circuits:
-        print("Escalate: a human must investigate " + ", ".join(run.open_circuits) + ".")
-
-
-# ---------------------------------------------------------------------------
-# Strategy 5: Rollback and escalation
-# An agent's plan can change real systems. Each action is registered with a
-# compensating undo; on failure, undo what completed in reverse order, then hand
-# off to a human.
-# ---------------------------------------------------------------------------
+# Rollback: an agent's multi-step action can change real systems. Each step is
+# registered with a compensating undo; on failure, completed steps are undone in
+# reverse order so the system is left consistent.
 
 @dataclass
 class Environment:
@@ -649,25 +688,24 @@ def run_with_rollback(steps: list[PlanStep]) -> PlanOutcome:
             step.action()
         except AgentError as exc:
             outcome.failed_step, outcome.error = step.name, str(exc)
-            print(f"  step '{step.name}' failed: {exc}")
+            INCIDENTS.detected(f"step {step.name}", str(exc))
             break
         done.append(step)
         outcome.completed.append(step.name)
-        print(f"  step '{step.name}' done")
 
     if not outcome.succeeded:
         for step in reversed(done):
             try:
                 step.undo()
                 outcome.rolled_back.append(step.name)
-                print(f"  rolled back '{step.name}'")
+                INCIDENTS.recovered(f"rolled back {step.name}")
             except Exception as exc:  # keep undoing the rest and report what is left over
                 outcome.undo_failures.append(f"{step.name}: {exc}")
-                print(f"  could not roll back '{step.name}': {exc}")
+                INCIDENTS.detected(f"rollback {step.name}", f"could not undo: {exc}")
     return outcome
 
 
-def write_escalation(task: str, outcome: PlanOutcome, env: Environment) -> str:
+def write_handoff_note(task: str, outcome: PlanOutcome, env: Environment) -> str:
     system = (
         "You write incident handoff notes for human operators. Be factual and "
         "brief. Only mention facts that are listed in the input."
@@ -677,7 +715,7 @@ def write_escalation(task: str, outcome: PlanOutcome, env: Environment) -> str:
     if env.resources:
         state = f"Resources still provisioned: {', '.join(env.resources)}."
     else:
-        state = "Nothing is provisioned. The system is back to its original state."
+        state = "Nothing is changed. The system is back to its original state."
     prompt = (
         f"Task: {task}\n"
         f"Failed step: {outcome.failed_step}\n"
@@ -687,46 +725,151 @@ def write_escalation(task: str, outcome: PlanOutcome, env: Environment) -> str:
         f"CURRENT SYSTEM STATE: {state}\n\n"
         "Write a handoff note of at most four lines: what failed and why, the "
         "current system state exactly as given above, and one recommended next "
-        "action."
+        "action. Output only the note."
     )
     return llm_call(prompt, system)
 
 
-def run_rollback_demo() -> None:
-    env = Environment()
+# The refund ticket: the model drives a tool; the tool is a multi-step action.
 
-    def add(resource: str) -> Callable[[], None]:
-        return lambda: env.resources.append(resource)
+ORDER_TOTALS = {"4821": 39.90}
 
-    def remove(resource: str) -> Callable[[], None]:
-        return lambda: env.resources.remove(resource)
 
-    def grant_vpn() -> None:
-        raise PermanentError("identity provider rejected request: group 'vpn-users' does not exist")
+def validate_refund(args: dict) -> None:
+    problems = []
+    order_id = str(args.get("order_id"))
+    if order_id not in ORDER_TOTALS:
+        raise NotFoundError(f"order {order_id} does not exist")
+    try:
+        amount = float(args["amount"])
+        if not 0 < amount <= ORDER_TOTALS[order_id]:
+            problems.append(f"amount must be between 0 and the order total {ORDER_TOTALS[order_id]} (got {amount})")
+    except (KeyError, TypeError, ValueError):
+        problems.append(f"amount must be a plain number such as 12.5 (got {args.get('amount')!r})")
+    if not str(args.get("reason", "")).strip():
+        problems.append("reason must be a non-empty string")
+    if problems:
+        raise InvalidRequestError("; ".join(problems))
 
-    # The agent's plan for the task: one tool call per step, each with its undo.
-    plan = [
-        PlanStep("create_account", add("account:jlee"), remove("account:jlee")),
-        PlanStep("assign_laptop", add("laptop:MBP-221"), remove("laptop:MBP-221")),
-        PlanStep("grant_vpn_access", grant_vpn, lambda: None),
-    ]
-    task = "Onboard new employee J. Lee"
 
-    print("\n=== Strategy 5: Rollback and escalation ===")
-    print(f"Task: {task}")
-    outcome = run_with_rollback(plan)
-    print(f"Resources after rollback: {env.resources or 'none'}")
-    if not outcome.succeeded:
-        print("\nEscalation note for a human operator:")
-        print(write_escalation(task, outcome, env))
+@dataclass
+class RefundDesk:
+    """Simulated payment and email systems. Refunding is three steps with side effects."""
+
+    email_up: bool
+    env: Environment = field(default_factory=Environment)
+    outcome: PlanOutcome | None = None
+
+    def issue_refund(self, args: dict) -> str:
+        validate_refund(args)
+        order_id, amount = args["order_id"], float(args["amount"])
+        reservation, credit = f"reservation:{order_id}", f"credit:{amount:.2f} EUR"
+
+        def add(resource: str) -> Callable[[], None]:
+            return lambda: self.env.resources.append(resource)
+
+        def remove(resource: str) -> Callable[[], None]:
+            return lambda: self.env.resources.remove(resource)
+
+        def send_confirmation() -> None:
+            if not self.email_up:
+                raise PermanentError("email service rejected the message: mailbox unavailable")
+
+        self.outcome = run_with_rollback(
+            [
+                PlanStep("reserve_refund", add(reservation), remove(reservation)),
+                PlanStep("credit_payment", add(credit), remove(credit)),
+                PlanStep("send_confirmation", send_confirmation, lambda: None),
+            ]
+        )
+        if not self.outcome.succeeded:
+            raise PermanentError(f"refund stopped at {self.outcome.failed_step} and was rolled back")
+        return f"refund of {amount:.2f} EUR issued for order {order_id}."
+
+
+def run_refund_ticket() -> None:
+    INCIDENTS.ticket = "T-104"
+    request = "Please refund order 4821 (39.90 EUR). It arrived damaged."
+    print(f'\n--- T-104: "{request}" ---')
+
+    desk = RefundDesk(email_up=False)
+    refund_tool = Tool(
+        "issue_refund",
+        "issue_refund(order_id: string, amount: number in EUR, reason: non-empty string) - "
+        "refunds an order to the customer's original payment method",
+        desk.issue_refund,
+    )
+    # The model's first turn is scripted with an invalid amount so the demo always
+    # exercises self-correction. Every later turn is the real model.
+    flawed_turn = json.dumps(
+        {
+            "action": "call_tool",
+            "tool": "issue_refund",
+            "arguments": {"order_id": "4821", "amount": "39,90 EUR", "reason": "arrived damaged"},
+        }
+    )
+    run = run_agent(request, [refund_tool], "You are a refunds assistant for the support team.", first_turn=flawed_turn)
+
+    escalated = False
+    if desk.outcome is not None and not desk.outcome.succeeded:
+        # The refund could not be completed even after recovery, so a human takes over.
+        note = write_handoff_note(f"Refund order 4821 (39.90 EUR): {request}", desk.outcome, desk.env)
+        INCIDENTS.recovered("escalated to a human with a handoff note")
+        INCIDENTS.notify("refunds team", "refund could not be completed automatically, manual follow-up needed")
+        print(f"Handoff note for the refunds team:\n{note}")
+        escalated = True
+    elif run.open_circuits or run.stopped_by != "answer":
+        # The loop got stuck before the refund ran; nothing was changed.
+        INCIDENTS.recovered("escalated to a human: the agent could not finish the request")
+        INCIDENTS.notify("refunds team", f"agent stopped early (stopped by {run.stopped_by}, disabled: {run.open_circuits or 'none'})")
+        escalated = True
+
+    if escalated:
+        # The model must not promise anything the harness has not done, so the
+        # customer gets a fixed message once the case is escalated.
+        state = "No money has moved." if not desk.env.resources else "Part of the refund may need review."
+        print(f"Reply: We could not complete your refund automatically. {state} A human agent will contact you.")
+    else:
+        print(f"Reply: {run.answer}")
+
+
+# ---------------------------------------------------------------------------
+# Diagnosis
+# After the shift, the LLM reads the incident log and looks for root causes, so
+# the same failures are less likely to recur.
+# ---------------------------------------------------------------------------
+
+def diagnose() -> None:
+    """Ask the LLM for a likely root cause and a follow-up for each component that
+    had trouble. One small prompt per component works far better with a small model
+    than one prompt over the whole log."""
+    by_component: dict[str, Counter] = {}
+    for component, ticket, text in INCIDENTS.problems:
+        by_component.setdefault(component, Counter())[f"{ticket}: {text}"] += 1
+    system = (
+        "You are a site reliability assistant. Be factual and brief. Use only the facts you are given; "
+        "do not mention networks, DNS or anything else that is not listed."
+    )
+    for component, problems in by_component.items():
+        observed = "\n".join(f"- {text}" + (f" (x{n})" if n > 1 else "") for text, n in problems.items())
+        prompt = (
+            f"Component: {component}\nProblems detected during a support agent's shift:\n{observed}\n\n"
+            "Reply with exactly one line in this format and nothing else:\n"
+            "Cause (hypothesis): <at most 15 words>. Follow-up: <at most 15 words>."
+        )
+        print(f"- {component}: {llm_call(prompt, system)}")
 
 
 def run_demo() -> None:
-    run_retry_demo()
-    run_fallback_demo()
-    run_self_correction_demo()
-    run_guardrail_demo()
-    run_rollback_demo()
+    print("A support agent works through its queue. Today the order API, the LLM provider")
+    print("and the refund system all misbehave. Watch each ticket go detect -> handle -> recover.")
+    for ticket in status_tickets():
+        handle_status_ticket(ticket)
+    run_refund_ticket()
+
+    INCIDENTS.ticket = "-"
+    print(f"\n=== End of shift: {len(INCIDENTS.entries)} events logged. Diagnosis from the log ===")
+    diagnose()
 
 
 if __name__ == "__main__":

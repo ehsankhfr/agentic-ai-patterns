@@ -628,8 +628,8 @@ def run_demo(interactive: bool = False) -> None:
             {"Refund issued": 1},
         ),
         (
-            "Refund completed and the customer was sent a summary of what was done; "
-            "customer replied and confirmed the resolution.",
+            ("Refund completed and the customer was sent a summary of what was done; "
+            "customer replied and confirmed the resolution."),
             {"Refund issued": 3, "Customer confirmed resolution": 1},
         ),
     ]
