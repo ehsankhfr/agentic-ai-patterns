@@ -79,6 +79,10 @@ MODEL = "llama3.2"
 
 
 def llm_call(prompt: str, system: str = "", model: str = MODEL) -> str:
+    """Send one prompt to the model and return the reply text.
+
+    The system message is optional; when `system` is empty none is sent.
+    """
     messages = []
     if system:
         messages.append({"role": "system", "content": system})
@@ -99,6 +103,12 @@ def traced_llm_call(prompt: str, system: str) -> str:
 
 @dataclass
 class Milestone:
+    """A single measurable target, tracked as a current value against a target.
+
+    `corrective_action` is the suggested fix handed to the LLM when this
+    milestone falls below the monitoring threshold.
+    """
+
     name: str
     target: float
     current: float = 0.0
@@ -106,6 +116,7 @@ class Milestone:
 
     @property
     def progress(self) -> float:
+        """Fraction complete, clamped to [0, 1]; 0 if the target is not positive."""
         if self.target <= 0:
             return 0.0
         return max(0.0, min(1.0, self.current / self.target))
@@ -113,11 +124,19 @@ class Milestone:
 
 @dataclass
 class Goal:
+    """A named objective holding direct milestones and nested sub-goals."""
+
     title: str
     milestones: list[Milestone] = field(default_factory=list)
     subgoals: list["Goal"] = field(default_factory=list)
 
     def overall_progress(self) -> float:
+        """Mean progress of this goal's direct milestones and its sub-goals.
+
+        Recursive: each sub-goal contributes its own overall progress as a single
+        component, whatever the number of milestones inside it. Returns 0 if the
+        goal has neither milestones nor sub-goals.
+        """
         components = [milestone.progress for milestone in self.milestones]
         components.extend(subgoal.overall_progress() for subgoal in self.subgoals)
         if not components:
@@ -125,6 +144,12 @@ class Goal:
         return sum(components) / len(components)
 
     def iter_milestones(self, path: str = "") -> list[tuple[str, Milestone]]:
+        """Flatten the tree into (path, milestone) pairs, this goal's own first.
+
+        `path` is the chain of goal titles joined by " / " (for example
+        "Top goal / Sub-goal"). Callers leave it empty; it only carries the
+        parent path through the recursion.
+        """
         current_path = f"{path} / {self.title}" if path else self.title
         result = [(current_path, milestone) for milestone in self.milestones]
         for subgoal in self.subgoals:
@@ -134,16 +159,27 @@ class Goal:
 
 @dataclass
 class MonitorReport:
+    """The outcome of one review: overall progress and the LLM's corrective plan.
+
+    `interventions` is None when no milestone was lagging.
+    """
+
     progress: float
     interventions: str | None
 
     @property
     def on_track(self) -> bool:
+        """True when nothing was lagging, so no corrective plan was needed."""
         return self.interventions is None
 
 
 @dataclass
 class GoalMonitor:
+    """Checks a goal tree against a progress threshold and asks the LLM for fixes.
+
+    `threshold` is the minimum per-milestone progress (0-1) counted as on track.
+    """
+
     threshold: float = 0.7
 
     def review(
@@ -152,6 +188,12 @@ class GoalMonitor:
         previous_interventions: str | None = None,
         human_input: str | None = None,
     ) -> MonitorReport:
+        """Scan every milestone and, if any lag, get one LLM plan covering them all.
+
+        `previous_interventions` is the last plan, so the LLM adjusts it rather
+        than repeating itself. `human_input` is an update from a human, which the
+        prompt marks as authoritative. No LLM call is made when nothing is lagging.
+        """
         # Step 1: walk the goal tree and compare every milestone to the threshold.
         all_milestones = goal.iter_milestones()
         print(
@@ -246,8 +288,9 @@ class StallDetector:
     """
 
     max_idle_reviews: int = 2
-    _last_progress: dict[tuple[str, str], float] = field(default_factory=dict)
-    _idle_reviews: dict[tuple[str, str], int] = field(default_factory=dict)
+    # Both dicts are keyed by (goal path, milestone name).
+    _last_progress: dict[tuple[str, str], float] = field(default_factory=dict)  # progress at the previous review
+    _idle_reviews: dict[tuple[str, str], int] = field(default_factory=dict)  # consecutive idle reviews so far
 
     def observe(self, goal: Goal, threshold: float) -> list[str]:
         """Record the latest measurements; return names of milestones now stalled."""
@@ -358,6 +401,10 @@ def build_goal(issue_keys: list[str]) -> Goal:
 
 
 def format_goal_tree(goal: Goal) -> str:
+    """Render the goal, its sub-goals and their milestones as an indented outline.
+
+    Used for console output and as the progress snapshot in handoff briefs.
+    """
     lines = [f"Goal: {goal.title} ({goal.overall_progress():.0%} overall)"]
     for subgoal in goal.subgoals:
         lines.append(f"- {subgoal.title}: {subgoal.overall_progress():.0%}")
@@ -370,10 +417,15 @@ def format_goal_tree(goal: Goal) -> str:
 
 
 def print_goal_tree(goal: Goal) -> None:
+    """Print the outline produced by `format_goal_tree`."""
     print(format_goal_tree(goal))
 
 
 def print_report(label: str, report: MonitorReport) -> None:
+    """Print a review's overall progress, then 'On track' or the corrective plan.
+
+    `label` titles the output (for example "Review 2").
+    """
     print(f"\n{label}: {report.progress:.0%} overall")
     if report.on_track:
         print("Status: On track.")
@@ -390,6 +442,8 @@ def print_report(label: str, report: MonitorReport) -> None:
 
 @dataclass
 class HumanDecision:
+    """A human's answer to an escalation: the action they chose and their note."""
+
     # "handled":  the human completed the blocked step; the note carries the details
     # "guide":    the human advised the agent; the note is the advice
     # "take_over": the human owns the ticket from here; the note is the handoff
@@ -505,6 +559,13 @@ def apply_measurements(goal: Goal, measured: dict[str, float]) -> None:
 
 
 def run_demo(interactive: bool = False) -> None:
+    """Run the customer-support scenario end to end.
+
+    Triage the message, build the goal tree, then loop (act, re-measure, review,
+    detect stalls) until every milestone is on track, a human takes over, or the
+    rounds run out. With `interactive=True` the person at the console answers
+    escalations; otherwise a simulated human does.
+    """
     customer_message = (
         "Hi, my order #4821 arrived with a cracked screen and I was also charged "
         "twice for it. I need this sorted before Friday."

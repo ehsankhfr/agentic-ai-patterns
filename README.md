@@ -33,7 +33,7 @@ Practical Python examples of agentic AI patterns, from core LLM workflows to adv
 
 | Pattern | What it demonstrates |
 | --- | --- |
-| [Exception Handling and Recovery](03-capability-patterns/12-exception-handling-and-recovery/main.py) | Classifies failures and responds with retry and backoff, fallback chains with graceful degradation, LLM-driven self-correction of invalid requests, and rollback with a human escalation note. |
+| [Exception Handling and Recovery](03-capability-patterns/12-exception-handling-and-recovery/main.py) | Handles the failures specific to LLM agents: retries model API errors with backoff, falls back from a primary to a backup model and from live tools to a cache, lets the model correct its own tool calls from error messages, stops runaway loops with a circuit breaker and step budget, and rolls back a failed multi-step plan with an LLM-written human handoff note. |
 
 ## Setup
 
