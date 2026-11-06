@@ -34,12 +34,12 @@ Every event is written to one incident log, tagged `[detect]`, `[handle]`, `[rec
 
 Detection maps every failure onto a small set of classes in `classify_error()`. The class, not the original exception type, decides the response.
 
-| Class | Examples | Retried? | Disables the tool? |
+| Class | Examples | Retried? | Circuit breaker in the tool loop |
 | --- | --- | --- | --- |
-| `TransientError` | Timeout, connection error, no answer within the deadline, malformed tool payload, HTTP 408, 429 or 5xx | Yes, with backoff | No |
-| `InvalidRequestError` | HTTP 400 or 422, an invalid refund amount, a model reply that is not a valid action, a reply that ignores its data | No, the request must change | No |
-| `NotFoundError` | HTTP 404 | No | No, another id may still work |
-| `PermanentError` | HTTP 401 or 403, service down, an unrecognised exception | No | Yes, immediately |
+| `TransientError` | Timeout, connection error, no answer within the deadline, malformed tool payload, HTTP 408, 429 or 5xx | Yes, with backoff | Opens after 3 failures in a row |
+| `InvalidRequestError` | HTTP 400 or 422, an invalid refund amount, a model reply that is not a valid action, a reply that ignores its data | No, the request must change | Opens after 3 failures in a row |
+| `NotFoundError` | HTTP 404 | No | Opens after 3 failures in a row, because another id may still work |
+| `PermanentError` | HTTP 401 or 403, service down, an unrecognised exception | No | Opens immediately |
 
 Unknown errors are treated as permanent. Repeating a failure the agent does not understand is a guess.
 
@@ -128,8 +128,8 @@ flowchart TD
     OBS --> B
     E4 --> B
     B --> T
-    BU --> END(["Run ends: answer or step_budget"])
-    DONE --> END
+    BU --> FIN(["Run ends: answer or step_budget"])
+    DONE --> FIN
 ```
 
 Inside the `issue_refund` tool, the refund is three steps. Each is registered with a compensating undo, so a failure part-way leaves the system consistent. The scripted demo run goes like this:
@@ -190,11 +190,14 @@ pip install -r 03-capability-patterns/12-exception-handling-and-recovery/require
 python 03-capability-patterns/12-exception-handling-and-recovery/main.py
 ```
 
-Each line of the incident log is printed as it happens, tagged by stage and ticket. For example, ticket T-102 starts like this:
+Each line of the incident log is printed as it happens, tagged by stage and ticket. For example, ticket T-102 ends like this (the retry delays are jittered, so they differ from run to run):
 
 ```text
 [detect ] T-102 live order API: transient - 500 internal server error
-[handle ] T-102 live order API: retry 1/2 in 0.07s
+[handle ] T-102 live order API: giving up after 3 attempts
+[handle ] T-102 fallback: live order API -> cached snapshot
+[handle ] T-102 graceful degradation: answering from the cached snapshot and flagging it as possibly out of date
+[notify ] T-102 ops on-call: live order API is failing; the agent is serving cached data
 ```
 
 ## Tuning
