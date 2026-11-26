@@ -35,7 +35,7 @@ flowchart TD
 | Take over | Return the ticket and last draft to the human; the agent stops. |
 | Unavailable or invalid | Escalate without sending. |
 
-The revision limit is enforced in Python, not by a prompt. Every draft and decision is recorded in an in-memory audit trail. This is distinct from exception handling: human review is an intentional part of normal execution, not merely an emergency fallback.
+The revision limit is enforced in Python, not by a prompt. Each draft attempt and decision is recorded as an event in an in-memory audit trail; only the last draft is retained in the result. This is distinct from exception handling: human review is an intentional part of normal execution, not merely an emergency fallback.
 
 ## Running it
 
