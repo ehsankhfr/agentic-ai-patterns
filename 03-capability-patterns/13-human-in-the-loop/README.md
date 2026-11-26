@@ -112,9 +112,6 @@ python 03-capability-patterns/13-human-in-the-loop/main.py --variation checkpoin
 
 # All three variations in one run
 python 03-capability-patterns/13-human-in-the-loop/main.py --variation all --demo
-
-# Unit tests, no Ollama or third-party dependencies required
-python -m unittest discover -s 03-capability-patterns/13-human-in-the-loop -p 'test_*.py'
 ```
 
 | Ticket | Scenario | Expected outcome in demo |
