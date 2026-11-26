@@ -103,6 +103,20 @@ python 02-advanced-patterns/10-model-context-protocol/main.py
 
 Replace the path with the `main.py` path for any of the patterns listed above.
 
+## Automated tests
+
+The [repository-wide GitHub Actions workflow](.github/workflows/tests.yml) runs Python tests on pull requests and pushes to `main`, with Python 3.10, 3.12 and 3.13. It automatically discovers tracked or unignored Python test files (`test*.py` or `*_test.py`) in any folder, including nested folders. Both unittest and pytest tests are supported. Folders without test files are skipped.
+
+Each test folder runs in a fresh Python process to avoid collisions between the examples' independent `main.py` modules. CI creates a virtual environment per tested project and installs pytest and its nearest project's `requirements.txt`, `requirements-dev.txt` and `requirements-test.txt` when present. Tests should mock local LLM calls rather than require Ollama or secrets.
+
+Run the same discovery locally from the repository root:
+
+```bash
+python scripts/run_tests.py --install
+```
+
+Omit `--install` if pytest and the tested projects' dependencies are already installed in your current environment. No workflow changes are needed when adding a conventionally named Python test in a new folder.
+
 ## Requirements
 
 - Python 3.10 or later
