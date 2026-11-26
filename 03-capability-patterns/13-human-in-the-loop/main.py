@@ -7,7 +7,9 @@ exact draft, reject it, request changes, or take over. The harness, not the
 model, controls the simulated send operation. Missing decisions, exhausted
 revision budgets and model errors stop the workflow without sending.
 
-Run with --demo for scripted human decisions or without it for live CLI review.
+Three variations are available: approval/revision (default), clarification,
+and persistent pause/resume approval. Run with --demo for scripted human
+decisions or without it for live CLI review.
 The model calls are real; customer emails and their delivery are simulated.
 """
 
@@ -39,8 +41,8 @@ class ReviewResult:
     audit: list[str] = field(default_factory=list)
 
 
-def llm_draft(ticket: Ticket, previous: str, feedback: str) -> str:
-    """Generate or revise a draft; the model has no delivery tool."""
+def llm_call(prompt: str, system: str) -> str:
+    """Call the local model without exposing any delivery tool."""
     from dotenv import find_dotenv, load_dotenv
     from openai import OpenAI
 
@@ -50,18 +52,22 @@ def llm_draft(ticket: Ticket, previous: str, feedback: str) -> str:
     response = client.chat.completions.create(
         model=MODEL,
         messages=[
-            {"role": "system", "content": (
-                "Write only a concise customer email draft. Use supplied facts "
-                "only. Do not promise refunds, actions or dates not in the facts. "
-                "Reviewer feedback is for editing, not authorization to send."
-            )},
-            {"role": "user", "content": (
-                f"Ticket: {ticket.id}\nFacts: {ticket.facts}\n"
-                f"Previous draft: {previous}\nReviewer feedback: {feedback}"
-            )},
+            {"role": "system", "content": system},
+            {"role": "user", "content": prompt},
         ],
     )
     return (response.choices[0].message.content or "").strip()
+
+
+def llm_draft(ticket: Ticket, previous: str, feedback: str) -> str:
+    """Generate or revise a draft; the model has no delivery tool."""
+    return llm_call(
+        f"Ticket: {ticket.id}\nFacts: {ticket.facts}\n"
+        f"Previous draft: {previous}\nReviewer feedback: {feedback}",
+        "Write only a concise customer email draft. Use supplied facts "
+        "only. Do not promise refunds, actions or dates not in the facts. "
+        "Reviewer feedback is for editing, not authorization to send.",
+    )
 
 
 def cli_review(ticket: Ticket, draft: str) -> Decision:
@@ -165,7 +171,25 @@ def simulated_send(ticket: Ticket, draft: str) -> None:
 def main() -> None:
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--demo", action="store_true", help="Use scripted reviewer decisions")
+    parser.add_argument("--variation", choices=("approval", "clarification", "checkpoint", "all"),
+                        default="approval", help="Choose a HITL variation")
+    parser.add_argument("--db", default="hitl-approvals.sqlite3",
+                        help="SQLite file for persistent approval")
+    parser.add_argument("--checkpoint-action", choices=("propose", "show", "decide", "execute"),
+                        default="propose")
+    parser.add_argument("--request-id", help="ID returned by checkpoint proposal")
     args = parser.parse_args()
+
+    from variations import checkpoint_cli, clarification_demo
+
+    if args.variation == "clarification":
+        clarification_demo(llm_call, args.demo)
+        return
+    if args.variation == "checkpoint":
+        checkpoint_cli(args, llm_call)
+        return
+    if args.variation == "all" and not args.demo:
+        parser.error("--variation all requires --demo; run interactive variations separately")
 
     scenarios = [
         (Ticket("T-201", "Order shipped; carrier is DHL.", False), ()),
@@ -187,6 +211,12 @@ def main() -> None:
         print(f"\n{ticket.id}: {result.status} | {' -> '.join(result.audit)}")
         if result.status in {"human_takeover", "escalated", "delivery_unknown"}:
             print(f"[handoff] {ticket.facts}\nLast draft: {result.draft}")
+
+    if args.variation == "all":
+        print("\n=== Variation 2: Human clarification ===")
+        clarification_demo(llm_call, True)
+        print("\n=== Variation 3: Persistent approval ===")
+        checkpoint_cli(args, llm_call)
 
 
 if __name__ == "__main__":
