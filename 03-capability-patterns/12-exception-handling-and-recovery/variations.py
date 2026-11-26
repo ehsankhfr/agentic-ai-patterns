@@ -217,21 +217,28 @@ def reflection_demo(ask):
 def checkpoint_demo(ask, path=None):
     print("\n=== Variation 3: Proactive resilience and checkpoint recovery ===")
     def demonstrate(db_path):
-        state = {"up": False}
+        state = {"up": False, "reported_healthy": False}
 
         def draft(outputs):
             if not state["up"]:
                 raise RuntimeError("Model became unavailable after preflight")
-            return ask(json.dumps(outputs["lookup"]),
-                       "Draft a short shipment update using only the supplied facts.")
+            reply = ask(json.dumps(outputs["lookup"]),
+                        "Draft a short shipment update using only the supplied facts.").strip()
+            if not reply:
+                raise ValueError("Empty model reply")
+            return reply
 
         def stages():
             return [
                 Stage("lookup", lambda: True, lambda _: {"carrier": "UPS", "eta": "Thursday"}),
-                Stage("draft", lambda: True, draft),
+                Stage("draft", lambda: state["reported_healthy"], draft),
             ]
 
-        # The mock dependency reports healthy, but fails during execution.
+        # First demonstrate that a known outage prevents any new work.
+        result = monitored_workflow(Checkpoints(db_path), "shipment-4821", stages())
+        print(f"[preflight: {result.status}] {result.value}")
+        # A subsequent health check passes, but the dependency fails during execution.
+        state["reported_healthy"] = True
         result = monitored_workflow(Checkpoints(db_path), "shipment-4821", stages())
         print(f"[{result.status}] {result.value}")
         state["up"] = True
