@@ -200,19 +200,6 @@ Each line of the incident log is printed as it happens, tagged by stage and tick
 [notify ] T-102 ops on-call: live order API is failing; the agent is serving cached data
 ```
 
-## Unit tests
-
-The [test suite](test_main.py) covers error classification, deadlines, malformed payloads, grounding, backoff, fallback, circuit breakers, step budgets, rollback, simulated refunds and handoff notes. LLM calls are mocked or scripted, so Ollama is not required.
-
-From the repository root:
-
-```bash
-pip install -r 03-capability-patterns/12-exception-handling-and-recovery/requirements.txt
-python -m unittest discover -s 03-capability-patterns/12-exception-handling-and-recovery -p 'test_*.py' -v
-```
-
-The repository-wide GitHub Actions workflow discovers these tests automatically. To run the same discovery locally, use `python scripts/run_tests.py --install`.
-
 ## Tuning
 
 | Setting | Where | Default |
