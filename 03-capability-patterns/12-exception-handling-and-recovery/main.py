@@ -6,7 +6,7 @@ Tools time out, services return errors or garbage, the model API throttles, the
 model itself produces a bad tool call or an answer that ignores its data, and a
 multi-step action can fail halfway through. This pattern gives an agent a way to
 notice each of these, respond in proportion, and return to a stable state
-instead of crashing or, worse, inventing an answer to hide the failure. It has
+instead of crashing or, worse, inventing an answer to hide the failure. The original reactive variation has
 three stages that feed one another:
 
   1. Error detection   – Spot the problem. The agent checks HTTP status codes
@@ -37,10 +37,14 @@ read each ticket as a trip around the detect → handle → recover loop.
 The order status tickets are a layered pipeline over shared state (live API →
 cached fallback → response agent). The refund ticket is a model-driven tool loop
 with a step budget and a circuit breaker. Failures in the demo are simulated;
-the LLM calls are real.
+the LLM calls are real. Two additional variations demonstrate reflection on
+failed SQL and proactive dependency checks with durable SQLite checkpoints.
 """
 
+import argparse
 import itertools
+import logging
+import os
 import json
 import random
 import re
@@ -64,7 +68,7 @@ from openai import (
 
 load_dotenv(find_dotenv())
 
-client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama")
+client = OpenAI(base_url="http://localhost:11434/v1", api_key="ollama", timeout=30.0, max_retries=0)
 MODEL = "llama3.2"
 
 SUPPORT_SYSTEM = "You are a concise support assistant. Use only the supplied data. Never invent facts."
@@ -111,11 +115,20 @@ class IncidentLog:
     ticket: str = "-"
     entries: list[str] = field(default_factory=list)
     problems: list[tuple[str, str, str]] = field(default_factory=list)  # (component, ticket, what was detected)
+    log_path: str | None = None  # optional append-only JSONL audit file
 
     def _add(self, stage: str, text: str) -> None:
         line = f"[{stage:<7}] {self.ticket} {text}"
         self.entries.append(line)
         print(f"  {line}")
+        if self.log_path:
+            try:
+                with open(self.log_path, "a", encoding="utf-8") as stream:
+                    stream.write(json.dumps({"time": time.time(), "stage": stage, "ticket": self.ticket, "message": text}) + "\n")
+                    stream.flush()
+                    os.fsync(stream.fileno())
+            except OSError as exc:
+                logging.warning("Incident log persistence failed: %s", exc)
 
     def detected(self, component: str, text: str) -> None:
         self.problems.append((component, self.ticket, text))
@@ -621,7 +634,12 @@ def run_agent(
         return [name for name, count in failures.items() if count >= failure_limit]
 
     for step in range(1, max_steps + 1):
-        raw = first_turn if (step == 1 and first_turn) else chat(messages)
+        try:
+            raw = first_turn if (step == 1 and first_turn) else chat(messages)
+        except Exception as exc:
+            INCIDENTS.detected("agent model", f"model unavailable: {type(exc).__name__}")
+            INCIDENTS.notify("support team", "agent stopped; manual follow-up required")
+            return AgentRun("Unable to finish automatically; manual review required.", step - 1, "model_error", open_circuits())
         print(f"  step {step}: {raw}")
         messages.append({"role": "assistant", "content": raw})
         try:
@@ -648,7 +666,12 @@ def run_agent(
             ),
         }
     )
-    return AgentRun(chat(messages), max_steps, "step_budget", open_circuits())
+    try:
+        answer = chat(messages)
+    except Exception as exc:
+        INCIDENTS.detected("agent model", f"status generation failed: {type(exc).__name__}")
+        answer = "Step budget exhausted; manual review required."
+    return AgentRun(answer, max_steps, "step_budget", open_circuits())
 
 
 # Rollback: an agent's multi-step action can change real systems. Each step is
@@ -686,9 +709,10 @@ def run_with_rollback(steps: list[PlanStep]) -> PlanOutcome:
     for step in steps:
         try:
             step.action()
-        except AgentError as exc:
-            outcome.failed_step, outcome.error = step.name, str(exc)
-            INCIDENTS.detected(f"step {step.name}", str(exc))
+        except Exception as exc:
+            error = classify_error(exc)
+            outcome.failed_step, outcome.error = step.name, str(error)
+            INCIDENTS.detected(f"step {step.name}", str(error))
             break
         done.append(step)
         outcome.completed.append(step.name)
@@ -727,7 +751,12 @@ def write_handoff_note(task: str, outcome: PlanOutcome, env: Environment) -> str
         "current system state exactly as given above, and one recommended next "
         "action. Output only the note."
     )
-    return llm_call(prompt, system)
+    try:
+        return llm_call(prompt, system)
+    except Exception as exc:
+        INCIDENTS.detected("handoff model", f"unavailable: {type(exc).__name__}")
+        return (f"Task: {task}\nFailed step: {outcome.failed_step}; error: {outcome.error}\n"
+                f"{state}\nManual review required. Undo failures: {outcome.undo_failures or 'none'}")
 
 
 # The refund ticket: the model drives a tool; the tool is a multi-step action.
@@ -857,20 +886,49 @@ def diagnose() -> None:
             "Reply with exactly one line in this format and nothing else:\n"
             "Cause (hypothesis): <at most 15 words>. Follow-up: <at most 15 words>."
         )
-        print(f"- {component}: {llm_call(prompt, system)}")
+        try:
+            diagnosis = llm_call(prompt, system)
+        except Exception as exc:
+            diagnosis = (f"Model unavailable ({type(exc).__name__}); root cause unconfirmed. "
+                         f"Review these recorded observations:\n{observed}")
+        print(f"- {component}: {diagnosis}")
 
 
 def run_demo() -> None:
     print("A support agent works through its queue. Today the order API, the LLM provider")
     print("and the refund system all misbehave. Watch each ticket go detect -> handle -> recover.")
     for ticket in status_tickets():
-        handle_status_ticket(ticket)
-    run_refund_ticket()
+        try:
+            handle_status_ticket(ticket)
+        except Exception as exc:
+            INCIDENTS.detected("ticket workflow", f"unexpected failure: {type(exc).__name__}")
+            INCIDENTS.notify("support team", "ticket stopped; manual follow-up required")
+    try:
+        run_refund_ticket()
+    except Exception as exc:
+        INCIDENTS.detected("refund workflow", f"unexpected failure: {type(exc).__name__}")
+        INCIDENTS.notify("refunds team", "refund state requires reconciliation; do not retry automatically")
 
     INCIDENTS.ticket = "-"
     print(f"\n=== End of shift: {len(INCIDENTS.entries)} events logged. Diagnosis from the log ===")
     diagnose()
 
 
+def main() -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument("--variation", choices=("reactive", "reflection", "checkpoint", "all"), default="reactive")
+    parser.add_argument("--incident-log", help="Optional JSONL audit path for reactive recovery")
+    parser.add_argument("--checkpoint-db", help="Optional persistent SQLite path; use only one worker per run")
+    args = parser.parse_args()
+    INCIDENTS.log_path = args.incident_log
+    from variations import reflection_demo, checkpoint_demo
+    if args.variation in ("reactive", "all"):
+        run_demo()
+    if args.variation in ("reflection", "all"):
+        reflection_demo(llm_call)
+    if args.variation in ("checkpoint", "all"):
+        checkpoint_demo(llm_call, args.checkpoint_db)
+
+
 if __name__ == "__main__":
-    run_demo()
+    main()
