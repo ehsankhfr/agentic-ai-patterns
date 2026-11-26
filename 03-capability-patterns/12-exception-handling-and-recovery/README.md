@@ -8,7 +8,17 @@ An agent that works in the real world cannot assume everything will go right. To
 
 The code is in [main.py](main.py). The scenario is a customer-support agent working through its queue on a bad day. Failures are simulated, and the LLM calls are real.
 
-## How it works
+## Variations
+
+| Variation | Main idea |
+| --- | --- |
+| 1. Reactive exception handling | Detect, classify and handle failures with retries, fallbacks, circuit breakers, rollback and escalation. |
+| 2. Reflection-driven recovery | Analyse a concrete execution exception, refine the generated action, retry within a budget and validate the result. |
+| 3. Proactive resilience | Check dependency health before and during work, persist completed stages and resume after a failure. |
+
+These approaches share a resilience lifecycle: prepare for failures, detect them, respond proportionately and restore safe operation or stop in a controlled state. Diagnostics provide evidence for improving future preparation. Continuous operation is a goal, not a guarantee: a controlled stop is safer than an incorrect answer or duplicate side effect.
+
+## Variation 1: Reactive exception handling
 
 ```mermaid
 flowchart TD
@@ -180,6 +190,57 @@ sequenceDiagram
 
 After the last ticket, `diagnose()` groups the problems in the incident log by component and asks the LLM for a likely cause and a follow-up for each one.
 
+## Variation 2: Reflection-driven recovery
+
+A support agent needs shipment data for order 4821. Its initial generated SQL references a nonexistent column. Rather than retrying the same SQL, the agent provides the exception, failed query, task and known schema to an LLM, asks for a diagnosis and then requests a corrected query in a second call. The corrected result is independently validated.
+
+```mermaid
+flowchart TD
+    A[Generate query] --> X[Execute read-only query]
+    X --> V{Result valid?}
+    X -->|exception| B{Attempts left?}
+    V -->|yes| D([Recovered / completed])
+    V -->|no| B
+    B -->|yes| R[LLM reflects on failure]
+    R --> Q[LLM generates changed SQL]
+    Q --> X
+    R -->|model unavailable| F([Controlled failure])
+    Q -->|unchanged or invalid model response| F
+    B -->|no| F
+```
+
+The database is disposable and contains only simulated orders. SQLite authorization permits reads of the demo table, not arbitrary database writes; a progress handler limits execution work. The harness verifies the expected columns and exact recorded values for the requested order. It is a small teaching example, not a production sandbox for arbitrary generated SQL. The initial error is scripted so the demonstration always exercises reflection; subsequent reasoning and revision use the local LLM.
+
+## Variation 3: Proactive resilience and checkpoint recovery
+
+The agent checks every unfinished stage's dependency before starting new work, checks again immediately before executing each stage and checkpoints successful outputs in SQLite. An outage can pause the workflow without discarding completed work. Reopening the store restores progress and skips the completed stages.
+
+```mermaid
+flowchart TD
+    A[Load saved outputs] --> H{Preflight healthy?}
+    H -->|no| P([Pause safely])
+    H -->|yes| S[Select next unfinished stage]
+    S --> K{Dependency still healthy?}
+    K -->|no| P
+    K -->|yes| E[Execute read-only stage]
+    E -->|error| P
+    E --> C[(Commit output and audit event)]
+    C --> N{More stages?}
+    N -->|yes| S
+    N -->|no| D([Completed])
+    P -.->|dependency recovers; reopen store| A
+```
+
+The demo first reports an unavailable dependency during preflight, then simulates a healthy check followed by an outage during execution. The order lookup remains checkpointed; after the dependency recovers, the draft stage runs using the stored result. The model generates the draft; no message is actually sent.
+
+This is a sequential, single-worker example for read-only/idempotent work. Stage names identify the saved plan; use a separate run ID for a different task or input. A checkpoint cannot guarantee exactly-once execution of a real external side effect, and a crash before a stage commits may repeat that stage. Production systems need stronger task identity, concurrency control, idempotency and reconciliation.
+
+## Operational monitoring and controlled failure
+
+The reactive strategy can append timestamped incident records to a JSONL file with `--incident-log`. The in-memory log still powers the end-of-shift diagnostic report. The persistent file is an audit trail, not a replayable workflow state; checkpoint mode separately persists outputs and events to SQLite.
+
+Model outages in the tool loop stop the agent with a controlled status. Handoff notes and diagnostics use factual, non-LLM fallbacks when the model is unavailable; diagnostic root causes remain unconfirmed. Unexpected exceptions during forward execution trigger compensation of completed steps, while failed compensations are reported. A partially applied failed step or ambiguous external outcome still requires reconciliation. The demo continues to the next ticket where possible.
+
 ## Running it
 
 Ollama must be running with the `llama3.2` model. See the [setup instructions](../../README.md#setup) in the root README. From the repository root:
@@ -188,7 +249,18 @@ Ollama must be running with the `llama3.2` model. See the [setup instructions](.
 pip install -r 03-capability-patterns/12-exception-handling-and-recovery/requirements.txt
 
 python 03-capability-patterns/12-exception-handling-and-recovery/main.py
+
+# Reflection-driven SQL recovery
+python 03-capability-patterns/12-exception-handling-and-recovery/main.py --variation reflection
+
+# Proactive checks and checkpoint recovery
+python 03-capability-patterns/12-exception-handling-and-recovery/main.py --variation checkpoint
+
+# All three variations
+python 03-capability-patterns/12-exception-handling-and-recovery/main.py --variation all
 ```
+
+Use `--incident-log /tmp/recovery.jsonl` to preserve reactive audit events, or `--checkpoint-db /tmp/recovery.sqlite3` to retain the checkpoint demo's database beyond the run. Choose paths appropriate to your operating system and keep real customer data out of source control. By default the checkpoint demo uses a temporary database.
 
 Each line of the incident log is printed as it happens, tagged by stage and ticket. For example, ticket T-102 ends like this (the retry delays are jittered, so they differ from run to run):
 
